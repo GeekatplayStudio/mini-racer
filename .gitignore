@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+reports/
+.stryker-tmp/
+*.log
+
+# Editor settings
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
