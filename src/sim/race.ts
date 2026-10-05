@@ -25,7 +25,11 @@ export interface RaceOptions {
   wearScale?: number;
   /** Most road hazards on the track at once; 0 turns them off. */
   hazards?: number;
+  /** Weather for the session. Default clear. */
+  weather?: Weather;
 }
+
+export type Weather = 'clear' | 'rain' | 'snow';
 
 export type HazardKind = 'oil' | 'wreck' | 'animal' | 'tyre' | 'debris';
 
@@ -159,6 +163,7 @@ export class Race {
   readonly seed: number;
   readonly wearScale: number;
   readonly maxHazards: number;
+  readonly weather: Weather;
   /** Hazards on the track now. */
   hazards: Hazard[] = [];
   private seen: CarView[] = [];
@@ -202,6 +207,7 @@ export class Race {
     this.seed = seed;
     this.wearScale = options.wearScale ?? 1;
     this.maxHazards = Math.max(0, Math.floor(options.hazards ?? 0));
+    this.weather = options.weather ?? 'clear';
     this.line = line ?? computeRacingLine(track);
     const rng = new Rng(seed);
     this.greenAt = FIRST_LIGHT + 5 * LIGHT_INTERVAL + rng.range(0.4, 1.6);

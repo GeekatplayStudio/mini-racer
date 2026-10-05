@@ -78,7 +78,7 @@ const fixture = params.get('fixture');
 const store: ProfileStore = fixture ? new MemoryStore() : new LocalStore();
 const profile: Profile = fixture === 'built' ? fixtureProfile() : (store.load() ?? newProfile());
 if (params.get('admin') === '1') profile.admin = true;
-for (const key of ['track', 'distance', 'wear', 'pit', 'traffic', 'hazards'] as const) {
+for (const key of ['track', 'distance', 'wear', 'pit', 'traffic', 'hazards', 'weather'] as const) {
   // Test hooks: preset the race rules from the address bar.
   const v = params.get(key);
   if (v === null) continue;
@@ -87,6 +87,7 @@ for (const key of ['track', 'distance', 'wear', 'pit', 'traffic', 'hazards'] as 
   else if (key === 'wear') profile.prefs.wearScale = Number(v);
   else if (key === 'pit') profile.prefs.pitMode = v === 'manual' ? 'manual' : 'auto';
   else if (key === 'hazards') profile.prefs.hazards = Number(v);
+  else if (key === 'weather') profile.prefs.weather = v === 'rain' || v === 'snow' ? v : 'clear';
   else profile.prefs.traffic = v === '1';
 }
 
@@ -264,6 +265,7 @@ const app: App = {
       pitMode: prefs.pitMode,
       wearScale: prefs.wearScale,
       hazards: prefs.hazards,
+      weather: prefs.weather,
     });
     if (!made) {
       app.toast('That car is not race legal', true);

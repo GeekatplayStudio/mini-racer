@@ -2,7 +2,7 @@ import { CarModel, GT3_CARS, LIVERIES, Livery } from '../data/cars';
 import { getPart } from '../data/parts';
 import { DriverDef, deriveProfile, generateDriver } from '../sim/driver';
 import { computeSpeedProfile } from '../sim/line';
-import { PitMode, Race } from '../sim/race';
+import { PitMode, Race, Weather } from '../sim/race';
 import { Rng } from '../sim/rng';
 import { Track, TrackDef } from '../sim/track';
 import { CarBuild, bodyOf, deriveCar, generateBuild } from './build';
@@ -124,6 +124,7 @@ export interface PlayerRaceOptions {
   wearScale?: number;
   /** Most road hazards on track at once; 0 for none. */
   hazards?: number;
+  weather?: Weather;
 }
 
 /**
@@ -162,7 +163,7 @@ export function createPlayerRace(opts: PlayerRaceOptions): RaceSession | null {
     opts.laps,
     rng.int(1, 0x7fffffff),
     ref.line,
-    { wearScale: opts.wearScale ?? 1, hazards: opts.hazards ?? 0 },
+    { wearScale: opts.wearScale ?? 1, hazards: opts.hazards ?? 0, weather: opts.weather ?? 'clear' },
   );
   const playerCar = entries.indexOf(player);
   return { track: ref.track, race, entries, playerCar, counts: !opts.practice, trackDef: opts.trackDef, playerGrid: playerCar + 1 };

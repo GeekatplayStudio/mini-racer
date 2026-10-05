@@ -1,6 +1,7 @@
 import { LIVERIES } from '../data/cars';
 import { Part, SLOTS, SlotId, getPart } from '../data/parts';
 import type { PreparedTrack } from './trackCache';
+import type { Weather } from '../sim/race';
 import {
   DriverDef,
   SKILLS,
@@ -68,7 +69,14 @@ export interface RacePrefs {
   traffic: boolean;
   /** Most road hazards on track at once; 0 for none. */
   hazards: number;
+  weather: Weather;
 }
+
+export const WEATHERS: readonly { id: Weather; label: string }[] = [
+  { id: 'clear', label: 'Dry' },
+  { id: 'rain', label: 'Showers' },
+  { id: 'snow', label: 'Light snow' },
+];
 
 export const HAZARD_LEVELS: readonly { label: string; max: number }[] = [
   { label: 'Off', max: 0 },
@@ -90,7 +98,7 @@ export const WEAR_SCALES: readonly { label: string; scale: number }[] = [
 ];
 
 export function defaultPrefs(): RacePrefs {
-  return { trackId: 'brands-hatch-indy', distance: 0, wearScale: 1, pitMode: 'auto', traffic: false, hazards: 0 };
+  return { trackId: 'brands-hatch-indy', distance: 0, wearScale: 1, pitMode: 'auto', traffic: false, hazards: 0, weather: 'clear' };
 }
 
 /** One line of the team's race history. */
