@@ -154,6 +154,11 @@ async function link(app: App): Promise<void> {
   ]);
 }
 
+/** Starts following the account from the moment the game opens, so signing in anywhere links the team. */
+export function watchOnline(app: App): void {
+  install(app);
+}
+
 function install(app: App): void {
   if (shellApp) return;
   shellApp = app;

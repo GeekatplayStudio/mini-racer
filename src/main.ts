@@ -43,12 +43,13 @@ import { mountDrivers } from './ui/driverScreen';
 import { mountGarage } from './ui/garageScreen';
 import { mountHistory } from './ui/historyScreen';
 import { mountHome } from './ui/homeScreen';
-import { OnlineRace, mountOnline, noteProfileChanged } from './ui/onlineScreen';
+import { OnlineRace, mountOnline, noteProfileChanged, watchOnline } from './ui/onlineScreen';
 import { Hud } from './ui/hud';
 import { defaultLook } from './ui/portrait';
 import { COMMANDS } from './ui/radio';
 import { openTeamTools } from './ui/teamTools';
 import { createStatus, iconButton, setIcon, tabButton } from './ui/topbar';
+import { TitleScreen } from './ui/titleScreen';
 import { mountTune } from './ui/tuneScreen';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -130,7 +131,7 @@ function toggleSound(): void {
 showSound();
 const status = createStatus({ profile, ref, go: (id) => app.go(id) });
 const topbar = h('div', { class: 'topbar' },
-  h('span', { class: 'brand', title: 'MiniRacer by Geekatplay Studio, Vladimir Chopine' },
+  h('span', { class: 'brand', title: 'MiniRacer by Geekatplay Studio, Vladimir Chopine: back to the title screen', onclick: () => showTitle() },
     h('span', { class: 'logo', text: 'MiniRacer' }),
     h('span', { class: 'by', text: 'Geekatplay Studio' }),
   ),
@@ -173,9 +174,35 @@ let raceFee = 0;
 let finishShot: string | null = null;
 let wantFinishShot = false;
 
+let title: TitleScreen | null = null;
+
+/** The live demo race with the title and sign-in panel over it. */
+function showTitle(): void {
+  if (title || session) return;
+  closeModal();
+  screen?.dispose?.();
+  screen = null;
+  uiRoot.style.display = 'none';
+  title = new TitleScreen(renderer, closeTitle);
+  document.body.append(title.root);
+  layout();
+  expose();
+}
+
+function closeTitle(): void {
+  if (!title) return;
+  title.dispose();
+  title = null;
+  uiRoot.style.display = '';
+  layout();
+  app.commit();
+  app.go('home');
+}
+
 function layout(): void {
   const w = window.innerWidth, hgt = window.innerHeight;
-  if (view) view.resize(w, hgt);
+  if (title) title.resize(w, hgt);
+  else if (view) view.resize(w, hgt);
   else garage.resize(w, hgt);
   // One layout unit: the screens are designed on a 640 x 360 grid and scale smoothly with the window.
   const u = Math.max(1.35, Math.min(w / 640, hgt / 360));
@@ -191,7 +218,7 @@ function layout(): void {
 
 function expose(): void {
   // For end-to-end tests and debugging.
-  (window as unknown as { miniracer: unknown }).miniracer = { session, view, profile, garage, screen: screenId };
+  (window as unknown as { miniracer: unknown }).miniracer = { session, view, profile, garage, screen: screenId, title };
 }
 
 const currentTrack = (): TrackDef => TRACKS.find((t) => t.id === profile.prefs.trackId) ?? TRACKS[0];
@@ -429,6 +456,14 @@ function frame(now: number): void {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
 
+  if (title) {
+    // The demo race is watched in silence until the visitor makes a choice.
+    sound.follow(null, null);
+    title.frame(dt);
+    requestAnimationFrame(frame);
+    return;
+  }
+
   if (session && view && hud) {
     const race = session.race;
     if (online) {
@@ -579,9 +614,14 @@ modalHost.addEventListener('click', (e) => {
 });
 
 hudRoot.style.display = 'none';
+watchOnline(app);
 app.commit();
+// Visitors arriving at the plain address get the title screen; test and deep links go straight in.
+const wantTitle = params.get('title') === '1' || (!params.has('fixture') && !params.has('screen') && params.get('quick') !== '1');
 if (params.get('quick') === '1') {
   startQuickRace();
+} else if (wantTitle) {
+  showTitle();
 } else {
   layout();
   const start = params.get('screen');

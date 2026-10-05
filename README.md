@@ -8,6 +8,12 @@ You do not steer the car. You build it, part by part, in a 3D garage; you create
 
 ## What is in the game
 
+**Title screen**
+
+- A live race between computer drivers runs behind the title, on a different circuit and in different weather each time.
+- The camera cuts between close battles, the leader, on-board views and the whole circuit.
+- Sign in or register in the middle of the screen, or play offline straight away. Click the logo in the top bar to come back to it.
+
 **Build the car**
 
 - 331 parts in 63 slots from many makers: shell, engine, internals, turbo, gearbox, suspension, brakes, tyres, aero, electronics and more.
@@ -62,6 +68,10 @@ You do not steer the car. You build it, part by part, in a 3D garage; you create
 | Drivers | Online |
 | --- | --- |
 | ![Drivers](docs/screenshots/drivers.png) | ![Online](docs/screenshots/online.png) |
+
+| Title screen |
+| --- |
+| ![Title screen](docs/screenshots/title.png) |
 
 ## Run it
 

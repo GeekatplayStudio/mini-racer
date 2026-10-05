@@ -42,6 +42,8 @@ export interface QuickRaceOptions {
   seed: number;
   /** 0-based grid position the player's car starts from. */
   playerGrid: number;
+  weather?: Weather;
+  hazards?: number;
 }
 
 const DEFAULT_RIM = 0xb8bcc8;
@@ -69,6 +71,7 @@ export function createQuickRace(opts: QuickRaceOptions): RaceSession {
     opts.laps,
     rng.int(1, 0x7fffffff),
     line,
+    { weather: opts.weather ?? 'clear', hazards: opts.hazards ?? 0 },
   );
   return { track, race, entries, playerCar: playerGrid, counts: true, trackDef: opts.trackDef, playerGrid: playerGrid + 1 };
 }

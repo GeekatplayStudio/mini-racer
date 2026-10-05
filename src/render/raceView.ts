@@ -115,6 +115,13 @@ export class RaceView {
     this.pipeline.dispose();
   }
 
+  /** Cuts straight to a camera on a car, with no pan from the last shot. */
+  cut(mode: CameraMode, car: number): void {
+    this.cameraMode = mode;
+    this.focusCar = car;
+    this.snapped = false;
+  }
+
   cycleCamera(): void {
     this.cameraMode = this.cameraMode === 'chase' ? 'pov' : this.cameraMode === 'pov' ? 'overview' : 'chase';
     this.snapped = false;
