@@ -50,22 +50,52 @@ let redraw: (() => void) | null = null;
 let rules: GameRules = { trackId: TRACKS[0].id, laps: TRACKS[0].defaultLaps, grid: 8, humans: 2, wearScale: 1, hazards: 0, weather: 'clear' };
 let pitMode: PitMode = 'auto';
 
-/** Revision of the online team this device last matched, for the signed-in account; 0 for none. */
-function syncedRev(): number {
+/** What this device remembers of its last match with the online team. */
+interface Synced {
+  name: string;
+  rev: number;
+  /** Fingerprint of the team on this device at that moment; absent in older records. */
+  print?: string;
+}
+
+function synced(): Synced | null {
   try {
-    const s = JSON.parse(localStorage.getItem(SYNC_KEY) ?? 'null') as { name: string; rev: number } | null;
-    return s && s.name === client.name ? s.rev : 0;
+    const s = JSON.parse(localStorage.getItem(SYNC_KEY) ?? 'null') as Synced | null;
+    return s && s.name === client.name ? s : null;
   } catch {
-    return 0;
+    return null;
   }
 }
 
-function setSynced(rev: number): void {
+/** Revision of the online team this device last matched, for the signed-in account; 0 for none. */
+function syncedRev(): number {
+  return synced()?.rev ?? 0;
+}
+
+function setSynced(rev: number, print = ''): void {
   try {
-    localStorage.setItem(SYNC_KEY, JSON.stringify({ name: client.name, rev }));
+    localStorage.setItem(SYNC_KEY, JSON.stringify({ name: client.name, rev, print } satisfies Synced));
   } catch {
     // Without storage the question is asked again next visit.
   }
+}
+
+/** A short digest of the team as both copies keep it: photos and test mode stay on the device. */
+function fingerprint(p: Profile): string {
+  const text = JSON.stringify({ ...p, photos: [], admin: false });
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+  return `${text.length.toString(36)}-${(hash >>> 0).toString(36)}`;
+}
+
+/**
+ * True when the team on this device has changes the online copy does not have:
+ * it differs from what was last uploaded or taken. Kept across visits, so a
+ * change made offline is never replaced quietly.
+ */
+function changedHere(profile: Profile): boolean {
+  const print = synced()?.print;
+  return !print || print !== fingerprint(profile);
 }
 
 /** Takes the team kept online, keeping this device's photos and test mode. */
@@ -76,7 +106,7 @@ function adopt(app: App, remote: Profile, rev: number): void {
   adopting = true;
   app.commit();
   adopting = false;
-  setSynced(rev);
+  setSynced(rev, fingerprint(p));
 }
 
 async function pull(app: App): Promise<void> {
@@ -86,8 +116,10 @@ async function pull(app: App): Promise<void> {
 
 /** Uploads the team over the revision this device last saw. False when the server has a newer one. */
 async function push(profile: Profile): Promise<boolean> {
+  // The upload is the team as it is now; an edit made while it travels keeps the device marked as changed.
+  const print = fingerprint(profile);
   try {
-    setSynced((await client.saveProfile(profile, syncedRev())).rev);
+    setSynced((await client.saveProfile(profile, syncedRev())).rev, print);
     return true;
   } catch (err) {
     if ((err as Error).message.includes('changed somewhere else')) {
@@ -103,9 +135,12 @@ export function noteProfileChanged(profile: Profile): void {
   if (!client.signedIn || adopting || inGame || syncedRev() <= 0) return;
   window.clearTimeout(pushTimer);
   pushTimer = window.setTimeout(() => {
+    // Nothing new (a photo, or the save every visit starts with): nothing to send, and no revision used up.
+    if (!changedHere(profile)) return;
     push(profile).then(
       (ok) => {
-        if (!ok) shellApp?.toast('Your online team was changed elsewhere: open the Online tab to choose', true);
+        // Changed on another device too: ask now which team to keep.
+        if (!ok && shellApp && !inGame) link(shellApp).catch((err: Error) => shellApp?.toast(err.message, true));
       },
       () => undefined,
     );
@@ -115,20 +150,26 @@ export function noteProfileChanged(profile: Profile): void {
 /**
  * After signing in: the team on this device and the one kept online become
  * one. Uploads quietly when nothing changed online since this device last
- * synced; otherwise the player chooses.
+ * synced, and takes the online team quietly when nothing changed here;
+ * otherwise the player chooses.
  */
 async function link(app: App): Promise<void> {
   const { profile, rev } = await client.loadProfile();
+  const local = app.profile;
   if (!profile || rev === syncedRev()) {
-    await client.saveProfile(app.profile, rev).then((r) => setSynced(r.rev));
+    if (!profile || changedHere(local)) {
+      const print = fingerprint(local);
+      await client.saveProfile(local, rev).then((r) => setSynced(r.rev, print));
+    }
     redraw?.();
     return;
   }
-  const local = app.profile;
   const fresh = !local.cars.length && !local.drivers.length;
-  if (fresh) {
+  // Newer online and untouched here, e.g. a race result banked while this device was away.
+  const behind = syncedRev() > 0 && rev > syncedRev() && !changedHere(local);
+  if (fresh || behind) {
     adopt(app, profile, rev);
-    app.toast(`Loaded your online team: ${money(profile.money)}`);
+    if (fresh) app.toast(`Loaded your online team: ${money(profile.money)}`);
     redraw?.();
     return;
   }
@@ -144,14 +185,20 @@ async function link(app: App): Promise<void> {
       } }),
       h('button', { class: 'btn', text: `This device: ${summary(local)}`, onclick: () => {
         app.closeDialog();
+        const print = fingerprint(local);
         client.saveProfile(local, rev).then((r) => {
-          setSynced(r.rev);
+          setSynced(r.rev, print);
           app.toast('Uploaded the team on this device');
           app.go('online');
         }, (err: Error) => app.toast(err.message, true));
       } }),
     ),
   ]);
+}
+
+/** True while this player sits in an online game room or races online: no offline race may start then. */
+export function onlineBusy(): boolean {
+  return !!room || !!active || inGame;
 }
 
 /** Starts following the account from the moment the game opens, so signing in anywhere links the team. */
@@ -176,13 +223,18 @@ function handle(app: App, ev: NetEvent): void {
       }
       break;
     case 'hello':
-      // Once per visit, and never in the middle of a race.
-      if (!linked && !inGame) {
+      // Never in the middle of a race: the race messages bring the team down then.
+      if (inGame) break;
+      if (!linked) {
+        // Once per visit: the two teams become one.
         linked = true;
         link(app).catch((err: Error) => {
           linked = false;
           app.toast(err.message, true);
         });
+      } else if (ev.rev > syncedRev() && syncedRev() > 0 && !changedHere(app.profile)) {
+        // Back after a drop with a newer team online (a result banked meanwhile) and nothing new here: take it quietly.
+        pull(app).then(() => redraw?.(), () => undefined);
       }
       break;
     case 'games':

@@ -17,10 +17,21 @@ export function trackById(id: string): TrackDef | undefined {
   return TRACKS.find((t) => t.id === id);
 }
 
+/** True when every number in a value, at any depth (arrays such as gears and torque included), is finite. */
+export function allFinite(v: unknown): boolean {
+  if (typeof v === 'number') return Number.isFinite(v);
+  if (Array.isArray(v)) return v.every(allFinite);
+  if (typeof v === 'object' && v !== null) return Object.values(v).every(allFinite);
+  return true;
+}
+
 function entryOf(build: CarBuild, driver: DriverDef, ref: PreparedTrack, isPlayer: boolean): Entry | null {
   const derived = deriveCar(build, ref);
   const body = bodyOf(build);
   if (!derived.legal || !derived.spec || !body) return null;
+  const pitSaving = derived.stats?.pitSaving ?? 0;
+  // One car with a NaN in it would stall the whole race for everyone.
+  if (!allFinite(derived.spec) || !Number.isFinite(pitSaving)) return null;
   const wheels = build.parts.wheels ? getPart(build.parts.wheels.part) : undefined;
   return {
     driver,
@@ -28,7 +39,7 @@ function entryOf(build: CarBuild, driver: DriverDef, ref: PreparedTrack, isPlaye
     livery: build.livery,
     rimColor: wheels?.look.c ?? DEFAULT_RIM,
     isPlayer,
-    pitSaving: derived.stats?.pitSaving ?? 0,
+    pitSaving,
   };
 }
 

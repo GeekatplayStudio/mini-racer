@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { RacingLine } from '../sim/line';
 import type { Weather } from '../sim/race';
 import { Rng } from '../sim/rng';
-import { KERB_WIDTH, Track } from '../sim/track';
+import { KERB_WIDTH, PIT_BOXES, Track } from '../sim/track';
 import { Mesher, paintMaterial } from './mesher';
 import {
   asphaltTexture,
@@ -284,7 +284,7 @@ function buildPitLane(track: Track): THREE.Group {
   mark(pit.offset + 2.2, pit.offset + 2.4, yellow, L - 190, 20);
   // Box brackets.
   const sb = new StripBuilder();
-  for (let k = 0; k < 10; k++) {
+  for (let k = 0; k < PIT_BOXES; k++) {
     const s = track.pitBox(k);
     const d0 = pit.offset + 2.5, d1 = pit.offset + 6.2;
     const p = (ss: number, d: number): THREE.Vector3Tuple => {

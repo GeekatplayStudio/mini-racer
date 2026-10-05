@@ -23,6 +23,7 @@ startServer({
   devCors: on(env.CORS_DEV),
   trustProxy: on(env.TRUST_PROXY),
   maxGames: Number(env.MAX_GAMES) || undefined,
+  maxPerAddress: Number(env.MAX_PER_ADDRESS) || undefined,
 }).then(
   (running) => {
     console.log(`MiniRacer server listening on port ${running.port}`);

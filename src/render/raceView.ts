@@ -5,6 +5,7 @@ import type { Hazard, RaceCar } from '../sim/race';
 import { LIVERIES } from '../data/cars';
 import { Surface } from '../sim/track';
 import { CarVisual, buildCarVisual } from './carMesh';
+import { disposeTree, photoOf } from './dispose';
 import { Puffs, SkidMarks } from './effects';
 import { PixelPipeline } from './pixelPipeline';
 import { TrackScene, buildTrackScene } from './trackScene';
@@ -103,15 +104,15 @@ export class RaceView {
   /** Draws the current frame and returns it as a JPEG data URL, for the finish-line photo. */
   capture(): string {
     this.render();
-    return this.renderer.domElement.toDataURL('image/jpeg', 0.82);
+    return photoOf(this.renderer.domElement);
   }
 
   dispose(): void {
-    this.scene.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      mesh.geometry?.dispose();
-    });
+    for (const mesh of this.hazardMeshes.values()) disposeTree(mesh);
+    this.hazardMeshes.clear();
     this.weather.dispose();
+    disposeTree(this.scene);
+    this.sun.shadow.dispose();
     this.pipeline.dispose();
   }
 
@@ -153,6 +154,7 @@ export class RaceView {
     for (const [id, mesh] of this.hazardMeshes) {
       if (!hazards.some((h) => h.id === id)) {
         this.scene.remove(mesh);
+        disposeTree(mesh);
         this.hazardMeshes.delete(id);
       }
     }

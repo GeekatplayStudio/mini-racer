@@ -97,6 +97,13 @@ export class Sound {
     if (this.ctx) this.master.gain.setTargetAtTime(muted ? 0 : 0.5, this.ctx.currentTime, 0.03);
   }
 
+  /** Silences everything while the page is hidden; the frame loop that drives the engine note stops then. */
+  setHidden(hidden: boolean): void {
+    if (!this.ctx) return;
+    if (hidden) void this.ctx.suspend();
+    else void this.ctx.resume();
+  }
+
   toggle(): boolean {
     this.setMuted(!this.muted);
     return this.muted;

@@ -147,12 +147,34 @@ export function charge(profile: Profile, cost: number): boolean {
   return true;
 }
 
+/** Pays money in; nothing is earned in test mode, so it cannot be used to fill the bank. */
+function credit(profile: Profile, amount: number): void {
+  if (!profile.admin) profile.money += amount;
+}
+
 /** Fills in fields that older saves do not have. */
+/** Race rules from storage, a server or the address bar, reduced to values the game understands. */
+export function sanitizePrefs(raw: Partial<RacePrefs> | null | undefined): RacePrefs {
+  const d = defaultPrefs();
+  const p = { ...d, ...(raw ?? {}) };
+  const int = (v: unknown, lo: number, hi: number, fallback: number): number =>
+    typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi ? v : fallback;
+  return {
+    trackId: typeof p.trackId === 'string' ? p.trackId : d.trackId,
+    distance: int(p.distance, 0, DISTANCES.length - 1, d.distance),
+    wearScale: typeof p.wearScale === 'number' && Number.isFinite(p.wearScale) && p.wearScale >= 0.5 && p.wearScale <= 20 ? p.wearScale : d.wearScale,
+    pitMode: p.pitMode === 'manual' ? 'manual' : 'auto',
+    traffic: p.traffic === true,
+    hazards: int(p.hazards, 0, 18, d.hazards),
+    weather: p.weather === 'rain' || p.weather === 'snow' ? p.weather : 'clear',
+  };
+}
+
 export function upgradeProfile(p: Profile): Profile {
   p.admin = p.admin === true;
   p.history = Array.isArray(p.history) ? p.history : [];
   p.photos = Array.isArray(p.photos) ? p.photos : [];
-  p.prefs = { ...defaultPrefs(), ...(p.prefs ?? {}) };
+  p.prefs = sanitizePrefs(p.prefs);
   return p;
 }
 
@@ -185,7 +207,8 @@ export function applyAutoBuild(profile: Profile, car: CarBuild, ref: PreparedTra
 /** Where the profile is kept. A server-backed store can replace the local one. */
 export interface ProfileStore {
   load(): Profile | null;
-  save(profile: Profile): void;
+  /** False when the team could not be written, e.g. browser storage is full. */
+  save(profile: Profile): boolean;
 }
 
 export class MemoryStore implements ProfileStore {
@@ -193,8 +216,9 @@ export class MemoryStore implements ProfileStore {
   load(): Profile | null {
     return this.data ? (JSON.parse(this.data) as Profile) : null;
   }
-  save(profile: Profile): void {
+  save(profile: Profile): boolean {
     this.data = JSON.stringify(profile);
+    return true;
   }
 }
 
@@ -210,11 +234,13 @@ export class LocalStore implements ProfileStore {
       return null;
     }
   }
-  save(profile: Profile): void {
+  save(profile: Profile): boolean {
     try {
       localStorage.setItem(this.key, JSON.stringify(profile));
+      return true;
     } catch {
-      // Storage full or blocked: the game carries on unsaved.
+      // Storage full or blocked: the game carries on, and the caller tells the player.
+      return false;
     }
   }
 }
@@ -290,7 +316,7 @@ export function removePart(profile: Profile, car: CarBuild, slot: SlotId): Resul
   if (slot === 'chassis') return fail('Sell the car to remove its chassis');
   const f = car.parts[slot];
   if (!f || !getPart(f.part)) return fail('Nothing fitted');
-  profile.money += resaleValue(f);
+  credit(profile, resaleValue(f));
   delete car.parts[slot];
   return ok;
 }
@@ -298,7 +324,7 @@ export function removePart(profile: Profile, car: CarBuild, slot: SlotId): Resul
 export function sellCar(profile: Profile, carId: string): Result {
   const i = profile.cars.findIndex((c) => c.id === carId);
   if (i < 0) return fail('No such car');
-  profile.money += buildResale(profile.cars[i]);
+  credit(profile, buildResale(profile.cars[i]));
   profile.cars.splice(i, 1);
   if (profile.selectedCar === carId) profile.selectedCar = profile.cars[0]?.id ?? null;
   return ok;
@@ -400,8 +426,8 @@ export function payEntry(profile: Profile, track: TrackDef): { paid: number; wil
 
 /** Banks the result of a race: prize money, win count and driver experience. */
 export function settleRace(profile: Profile, driverId: string, track: TrackDef, position: number): number {
-  const prize = prizeMoney(track, position);
-  profile.money += prize;
+  const prize = profile.admin ? 0 : prizeMoney(track, position);
+  credit(profile, prize);
   profile.races += 1;
   if (position === 1) profile.wins += 1;
   const driver = profile.drivers.find((d) => d.def.id === driverId);

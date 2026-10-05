@@ -77,7 +77,17 @@ export function mountHistory(app: App): Screen {
     const link = h('a', { class: 'btn', text: 'Save image' });
     link.href = p.data;
     link.download = `miniracer-${p.kind}-${dateText(p.date)}.jpg`;
-    app.dialog(p.caption, [img, link]);
+    // Photos fill browser storage fastest: the player can make room.
+    const remove = h('button', { class: 'btn warn', text: 'Delete photo', onclick: () => {
+      app.closeDialog();
+      app.confirm('Delete this photo? It cannot be brought back.', 'Delete', () => {
+        profile.photos = profile.photos.filter((x) => x.id !== p.id);
+        for (const r of profile.history) if (r.photo === p.id) r.photo = undefined;
+        app.commit();
+        app.go('history');
+      }, true);
+    } });
+    app.dialog(p.caption, [img, h('div', { class: 'actions' }, link, remove)]);
   };
 
   const album = h('div', { class: 'album' });

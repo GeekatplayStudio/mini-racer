@@ -573,17 +573,6 @@ function buildScore(build: CarBuild, ref: PreparedTrack): number {
   return 0.85 * ((50.5 - s.lapTime) / 10) + 0.15 * clamp((s.reliability - 0.3) / 0.6, 0, 1);
 }
 
-function partsCost(build: CarBuild): number {
-  let total = 0;
-  for (const slot of SLOTS) {
-    if (slot.id === 'chassis') continue;
-    const f = build.parts[slot.id];
-    const p = f ? getPart(f.part) : undefined;
-    if (f && p) total += partPrice(p, f.cond);
-  }
-  return total;
-}
-
 /** After an engine change: forced-induction parts appear or go with it. */
 function settleTurboSlots(build: CarBuild): void {
   for (const slot of SLOTS) {
@@ -610,9 +599,38 @@ export interface AutoBuildResult {
  */
 export function autoBuild(build: CarBuild, budget: number, ref: PreparedTrack): AutoBuildResult | null {
   if (!build.parts.chassis) return null;
-  const cur: CarBuild = { ...build, parts: { chassis: build.parts.chassis }, ecu: undefined };
-  for (const p of completionKit(cur, 'worn').parts) cur.parts[p.slot] = { part: p.id, cond: 'worn' };
+  const owned = build.parts;
+  // Keeping a fitted part costs only the trade-in given up for it, so pressing again never makes the car worse.
+  const partsCost = (b: CarBuild): number => {
+    let total = 0;
+    for (const slot of SLOTS) {
+      if (slot.id === 'chassis') continue;
+      const f = b.parts[slot.id];
+      const p = f ? getPart(f.part) : undefined;
+      if (!f || !p) continue;
+      const mine = owned[slot.id];
+      total += mine && mine.part === f.part && mine.cond === f.cond ? resaleValue(mine) : partPrice(p, f.cond);
+    }
+    return total;
+  };
+  const start = (keep: boolean): CarBuild => {
+    const b: CarBuild = { ...build, parts: { chassis: build.parts.chassis }, ecu: undefined };
+    if (keep) {
+      for (const slot of SLOTS) {
+        const f = owned[slot.id];
+        const p = f ? getPart(f.part) : undefined;
+        if (slot.id !== 'chassis' && f && p && !incompatibility(b, p)) b.parts[slot.id] = { ...f };
+      }
+    }
+    for (const p of completionKit(b, 'worn').parts) b.parts[p.slot] = { part: p.id, cond: 'worn' };
+    return b;
+  };
+  let cur = start(true);
   let spent = partsCost(cur);
+  if (spent > budget) {
+    cur = start(false);
+    spent = partsCost(cur);
+  }
   if (spent > budget) return null;
   let score = buildScore(cur, ref);
 

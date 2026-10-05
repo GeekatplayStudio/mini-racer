@@ -118,6 +118,7 @@ export class PixelPipeline {
   dispose(): void {
     this.target.dispose();
     this.material.dispose();
+    for (const o of this.quadScene.children) (o as THREE.Mesh).geometry?.dispose();
   }
 
   setSize(w: number, h: number): void {

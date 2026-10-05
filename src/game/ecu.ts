@@ -212,6 +212,7 @@ export function evaluateEcu(hw: EngineHardware, map: EcuMap): EcuResult {
   const aid = (level: number, best: number): [number, number] => {
     const t = (level - 1) / (AID_LEVELS - 1);
     // High settings step in early and hold grip in reserve; low settings leave it to the driver.
+    // A skilled foot does part of the job even with no unit fitted.
     return [Math.max(0.4, best * (0.45 + 0.55 * t)), 0.004 + 0.05 * t * t];
   };
   const [tcAssist, tcMargin] = aid(map.tc, hw.tcBest);

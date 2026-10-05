@@ -16,7 +16,7 @@ You do not steer the car. You build it, part by part, in a 3D garage; you create
 
 **Build the car**
 
-- 331 parts in 63 slots from many makers: shell, engine, internals, turbo, gearbox, suspension, brakes, tyres, aero, electronics and more.
+- 331 parts in 63 slots from 175 makers: shell, engine, internals, turbo, gearbox, suspension, brakes, tyres, aero, electronics and more.
 - Every part changes the car the physics runs: power, weight, grip, drag, downforce, reliability, pit-stop time.
 - New, used or worn parts at different prices.
 - Auto build picks the best parts your budget buys.

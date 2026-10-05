@@ -26,6 +26,7 @@ import {
   payEntry,
   prizeMoney,
   recordRace,
+  sanitizePrefs,
   settleRace,
 } from './game/profile';
 import { RaceSession, createPlayerRace, createQuickRace } from './game/raceSetup';
@@ -43,7 +44,7 @@ import { mountDrivers } from './ui/driverScreen';
 import { mountGarage } from './ui/garageScreen';
 import { mountHistory } from './ui/historyScreen';
 import { mountHome } from './ui/homeScreen';
-import { OnlineRace, mountOnline, noteProfileChanged, watchOnline } from './ui/onlineScreen';
+import { OnlineRace, mountOnline, noteProfileChanged, onlineBusy, watchOnline } from './ui/onlineScreen';
 import { Hud } from './ui/hud';
 import { defaultLook } from './ui/portrait';
 import { COMMANDS } from './ui/radio';
@@ -93,6 +94,7 @@ for (const key of ['track', 'distance', 'wear', 'pit', 'traffic', 'hazards', 'we
   else if (key === 'weather') profile.prefs.weather = v === 'rain' || v === 'snow' ? v : 'clear';
   else profile.prefs.traffic = v === '1';
 }
+profile.prefs = sanitizePrefs(profile.prefs);
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(1);
@@ -148,6 +150,7 @@ const modalHost = h('div', { class: 'modal-host hidden' });
 uiRoot.append(screenHost, topbar, toastHost);
 document.body.append(modalHost);
 let toastTimer = 0;
+let saveWarned = false;
 let modalYes: (() => void) | null = null;
 
 function closeModal(): void {
@@ -179,6 +182,10 @@ let title: TitleScreen | null = null;
 /** The live demo race with the title and sign-in panel over it. */
 function showTitle(): void {
   if (title || session) return;
+  if (onlineBusy()) {
+    app.toast('Leave your online game first', true);
+    return;
+  }
   closeModal();
   screen?.dispose?.();
   screen = null;
@@ -228,7 +235,11 @@ const app: App = {
   ref,
   garage,
   commit(): void {
-    store.save(profile);
+    if (store.save(profile)) saveWarned = false;
+    else if (!saveWarned) {
+      saveWarned = true;
+      app.toast('Could not save: browser storage is full. Delete some photos in History.', true);
+    }
     noteProfileChanged(profile);
     moneyLabel.textContent = profile.admin ? 'Test mode: free' : money(profile.money);
     moneyLabel.classList.toggle('test', profile.admin);
@@ -287,6 +298,10 @@ const app: App = {
     enterRace(race.session, false, race);
   },
   startRace(practice: boolean): void {
+    if (onlineBusy()) {
+      app.toast('Leave your online game first', true);
+      return;
+    }
     const car = profile.cars.find((c) => c.id === profile.selectedCar);
     const driver = profile.drivers.find((d) => d.def.id === profile.selectedDriver);
     if (!car || !driver) return;
@@ -319,6 +334,13 @@ const app: App = {
 };
 
 function enterRace(made: RaceSession, quick: boolean, net: OnlineRace | null = null): void {
+  // Whatever was on screen gives way: the title, an unfinished offline race, another online race.
+  if (title) {
+    title.dispose();
+    title = null;
+  }
+  if (session && !online && !quickMode && !settled) settle(true);
+  if (online && online !== net) online.leave();
   leaveRaceViews();
   online = net;
   session = made;
@@ -516,6 +538,7 @@ function frame(now: number): void {
 }
 
 window.addEventListener('resize', layout);
+document.addEventListener('visibilitychange', () => sound.setHidden(document.hidden));
 // Sound may only start after the player has clicked or pressed something.
 window.addEventListener('pointerdown', (e) => {
   sound.unlock();
@@ -529,10 +552,16 @@ window.addEventListener('keydown', (e) => {
   }
   if (!modalHost.classList.contains('hidden')) {
     if (e.key === 'Escape') closeModal();
-    else if (e.key === 'Enter') modalYes?.();
+    // Enter on a focused button presses that button (it may be Cancel), not the default.
+    else if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLInputElement)) modalYes?.();
     return;
   }
   if (!session || !view) return;
+  // Race keys must not also press whichever on-screen button was clicked last (Space would call another stop).
+  if (e.target instanceof HTMLButtonElement) {
+    e.target.blur();
+    if (e.key === ' ' || e.key === 'Enter') e.preventDefault();
+  }
   const count = session.race.cars.length;
   const order = COMMANDS.find((c) => c.key.toLowerCase() === e.key.toLowerCase());
   if (order && !quickMode && !e.ctrlKey && !e.metaKey) {
@@ -580,7 +609,9 @@ window.addEventListener('keydown', (e) => {
       break;
     case 'Escape': {
       if (quickMode) break;
-      const over = session.race.phase === 'finished';
+      const mine = session.race.cars[session.playerCar];
+      // After the flag, or once out of the race, leaving keeps the result.
+      const over = session.race.phase === 'finished' || mine.finished || mine.retired;
       if (online) {
         // The car races on under its driver; the team gives up the result.
         if (over) backToGarage();

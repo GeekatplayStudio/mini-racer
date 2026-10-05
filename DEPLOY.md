@@ -46,8 +46,9 @@ Start the server from the `miniracer/` folder, so that it finds `./dist`. You ca
 | `HOST`        | all interfaces   | Address to bind, e.g. `127.0.0.1` behind a reverse proxy. |
 | `DATA_DIR`    | `./server-data`  | Where accounts and saved teams are kept. |
 | `STATIC_DIR`  | `./dist`         | The built game. |
-| `TRUST_PROXY` | off              | `1` to read the client address from `X-Forwarded-For`. Set it **only** behind your own reverse proxy (nginx, Apache, Hostinger's proxy). It is used for the sign-in rate limit. |
+| `TRUST_PROXY` | off              | `1` to read the client address from `X-Forwarded-For`. Set it **only** behind your own reverse proxy (nginx, Apache, Hostinger's proxy). It is used for the sign-in rate limit and the per-address connection limit. |
 | `MAX_GAMES`   | `20`             | Most online games open or running at once. |
+| `MAX_PER_ADDRESS` | `6`          | Most lobby connections at once from one address. Raise it if many players share one router. |
 | `CORS_DEV`    | off              | `1` lets web pages from other origins call the API. **Development only; never in production.** |
 
 No secrets are needed. Nothing secret is in the repository.
@@ -186,7 +187,7 @@ Keep it out of git; the repository's `.gitignore` already excludes `server-data/
 
 Build again on your computer and upload the new `dist/` and `server-dist/`. Then restart
 (`pm2 restart miniracer`, `systemctl restart miniracer`, or Restart in hPanel). Races
-running at that moment are lost; accounts and saved teams are not.
+running at that moment are lost (their entry fees are refunded); accounts and saved teams are not.
 
 ## 9. Local development
 
@@ -205,5 +206,7 @@ Or build the game too (`npm run build`), run `npm start`, and open `http://local
   drivers before uploading. The server rebuilds and checks every car it races, and it
   checks drivers' skill points. Entry fees and prizes for online races are applied on the
   server. But a team's bank balance is not protected against tampering.
-- All games run in this one process. A restart ends the races in progress.
-- Sign-in attempts are limited to 10 a minute per address.
+- All games run in this one process. A restart ends the races in progress. A race the server
+  has to stop (an error, or still running after 3 hours) refunds its entry fees.
+- Sign-in attempts are limited to 10 a minute per address. A lobby connection must sign in
+  within 5 seconds, and a game nobody joins, enters or gets ready in for 15 minutes is closed.

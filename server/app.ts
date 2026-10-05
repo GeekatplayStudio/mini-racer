@@ -1,7 +1,8 @@
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, statSync } from 'node:fs';
 import { IncomingMessage, Server, ServerResponse, createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { extname, join, normalize, relative, resolve, sep } from 'node:path';
+import { pipeline } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { WS_PATH } from '../src/net/protocol';
 import { Accounts, ApiError, PROFILE_LIMIT, RateLimit, cleanProfile } from './accounts';
@@ -155,10 +156,26 @@ export function startServer(options: ServerOptions): Promise<RunningServer> {
     }
   }
 
+  const text = (res: ServerResponse, status: number, body: string): void => {
+    res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' });
+    res.end(body);
+  };
+
+  /** The file's size, or null when there is no such file. Other errors (no permission) throw. */
+  const fileSize = (file: string): number | null => {
+    try {
+      const st = statSync(file);
+      return st.isFile() ? st.size : null;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'ENAMETOOLONG' || code === 'EINVAL') return null;
+      throw err;
+    }
+  };
+
   function serveStatic(req: IncomingMessage, res: ServerResponse, path: string): void {
     if (!staticRoot || (req.method !== 'GET' && req.method !== 'HEAD')) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Not found');
+      text(res, 404, 'Not found');
       return;
     }
     let rel: string;
@@ -170,72 +187,116 @@ export function startServer(options: ServerOptions): Promise<RunningServer> {
     let file = join(staticRoot, rel);
     // Nothing outside the built game is ever served.
     if (file !== staticRoot && !file.startsWith(staticRoot + sep)) file = staticRoot;
-    if (!existsSync(file) || statSync(file).isDirectory()) {
+    // One look at the disk: whatever it says then is what is served.
+    let size = fileSize(file);
+    if (size === null) {
       // Files with an extension that are missing are missing; any other address is the game page.
       if (extname(rel) && rel !== sep) {
-        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Not found');
+        text(res, 404, 'Not found');
         return;
       }
       file = join(staticRoot, 'index.html');
-      if (!existsSync(file)) {
-        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('The game has not been built: run "npm run build"');
+      size = fileSize(file);
+      if (size === null) {
+        text(res, 404, 'The game has not been built: run "npm run build"');
         return;
       }
     }
-    const hashed = file.includes(`${sep}assets${sep}`);
-    res.writeHead(200, {
+    // Vite puts content-hashed files in assets/ at the top of the build; only those are cached for good.
+    const hashed = relative(staticRoot, file).split(sep)[0] === 'assets';
+    const headers = {
       ...SECURITY_HEADERS,
       'Content-Type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-      'Content-Length': statSync(file).size,
+      'Content-Length': size,
       'Cache-Control': hashed ? 'public, max-age=31536000, immutable' : 'no-cache',
-    });
-    if (req.method === 'HEAD') res.end();
-    else createReadStream(file).pipe(res);
-  }
-
-  const server: Server = createServer((req, res) => {
-    const path = (req.url ?? '/').split('?')[0];
-    if (!path.startsWith('/api/')) {
-      serveStatic(req, res, path);
+    };
+    if (req.method === 'HEAD') {
+      res.writeHead(200, headers);
+      res.end();
       return;
     }
-    if (options.devCors) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
+    const stream = createReadStream(file);
+    let opened = false;
+    // Until the file is open nothing has been sent, so a file that cannot be read still gets a proper answer.
+    stream.once('error', (err: NodeJS.ErrnoException) => {
+      if (opened) return;
+      console.error(`Could not read ${file}:`, err.message);
+      if (!res.destroyed) text(res, err.code === 'ENOENT' ? 404 : 500, err.code === 'ENOENT' ? 'Not found' : 'The server had a problem');
+    });
+    stream.once('open', () => {
+      opened = true;
+      if (!res.destroyed) res.writeHead(200, headers);
+      // pipeline closes the file when the reader goes away, and reports a later read error instead of throwing it.
+      pipeline(stream, res, (err) => {
+        if (err && (err as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') console.error(`Could not send ${file}:`, err.message);
+      });
+    });
+  }
+
+  /** Answers a request whose handler failed, if anything can still be sent. */
+  const failed = (res: ServerResponse, err: unknown): void => {
+    console.error('Request failed:', err);
+    if (!res.headersSent) json(res, 500, { error: 'The server had a problem' });
+    else res.destroy();
+  };
+
+  const server: Server = createServer((req, res) => {
+    // Nothing a request does may take the process down with it.
+    try {
+      const path = (req.url ?? '/').split('?')[0];
+      if (!path.startsWith('/api/')) {
+        serveStatic(req, res, path);
         return;
       }
-    }
-    api(req, res, path).catch((err: unknown) => {
-      if (res.headersSent) return;
-      if (err instanceof ApiError) json(res, err.status, { error: err.message });
-      else {
-        console.error('API call failed:', err);
-        json(res, 500, { error: 'The server had a problem' });
+      if (options.devCors) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204);
+          res.end();
+          return;
+        }
       }
-    });
+      api(req, res, path).catch((err: unknown) => {
+        if (res.headersSent) return;
+        if (err instanceof ApiError) json(res, err.status, { error: err.message });
+        else {
+          console.error('API call failed:', err);
+          json(res, 500, { error: 'The server had a problem' });
+        }
+      }).catch((err: unknown) => failed(res, err));
+    } catch (err) {
+      failed(res, err);
+    }
   });
   // Slow or stalled requests do not hold connections open for ever.
   server.requestTimeout = 30000;
   server.headersTimeout = 15000;
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  wss.on('error', (err) => console.error('WebSocket server error:', err));
   server.on('upgrade', (req, socket, head) => {
+    // Node takes its own error handling off a socket it hands over for an upgrade.
+    socket.on('error', () => socket.destroy());
     if ((req.url ?? '').split('?')[0] !== WS_PATH) {
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => lobby.attach(ws));
+    try {
+      wss.handleUpgrade(req, socket, head, (ws) => lobby.attach(ws, addressOf(req)));
+    } catch (err) {
+      console.error('WebSocket upgrade failed:', err);
+      socket.destroy();
+    }
   });
 
   return new Promise((ready, fail) => {
     server.once('error', fail);
     server.listen(options.port, options.host, () => {
+      server.off('error', fail);
+      // Once listening, an error is logged; it never ends the process.
+      server.on('error', (err) => console.error('Server error:', err));
       ready({
         port: (server.address() as AddressInfo).port,
         close: () =>

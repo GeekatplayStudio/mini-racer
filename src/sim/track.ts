@@ -50,6 +50,8 @@ export const SURFACES: readonly SurfaceProps[] = [
 ];
 
 export const KERB_WIDTH = 1.3;
+/** Boxes along the pit lane; one per car on the largest grid. */
+export const PIT_BOXES = 12;
 export const SAMPLE_SPACING = 2;
 
 const CORNER_KAPPA = 1 / 120;
@@ -161,7 +163,7 @@ export class Track {
 
   /** Lap distance of the pit box for a car number. */
   pitBox(id: number): number {
-    return this.length - 170 + (id % 10) * 13;
+    return this.length - 172 + (id % PIT_BOXES) * 11;
   }
 
   /**

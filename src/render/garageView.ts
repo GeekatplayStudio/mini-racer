@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { SLOTS, SlotId } from '../data/parts';
 import type { CarBuild } from '../game/build';
 import { Rng } from '../sim/rng';
+import { disposeTree, photoOf } from './dispose';
 import { GarageCar, buildGarageCar } from './garageCar';
 import { FigureLook, buildDriverFigure } from './driverFigure';
 import { PixelPipeline } from './pixelPipeline';
@@ -124,6 +125,8 @@ export class GarageView {
   private readonly camera = new THREE.PerspectiveCamera(34, 16 / 9, 0.3, 80);
   private readonly holder = new THREE.Group();
   private car: GarageCar | null = null;
+  private carKey = '';
+  private driverKey = '';
   private readonly driverHolder = new THREE.Group();
   private focusSlot: SlotId | null = null;
   private explodeWanted = 0;
@@ -237,6 +240,11 @@ export class GarageView {
 
   /** Shows a build, or an empty bay for null. Keeps the camera where it is. */
   setCar(build: CarBuild | null): void {
+    // Previews call this on every hover: rebuild only when something changed.
+    const key = build ? JSON.stringify(build) : '';
+    if (key === this.carKey && (this.car !== null) === (build !== null)) return;
+    this.carKey = key;
+    disposeTree(this.holder);
     this.holder.clear();
     this.car = build ? buildGarageCar(build) : null;
     if (this.car) {
@@ -251,6 +259,10 @@ export class GarageView {
    * Colours are CSS hex strings from the driver's chosen look.
    */
   setDriver(look: FigureLook | null): void {
+    const key = look ? JSON.stringify(look) : '';
+    if (key === this.driverKey) return;
+    this.driverKey = key;
+    disposeTree(this.driverHolder);
     this.driverHolder.clear();
     if (!look) return;
     const g = buildDriverFigure(look);
@@ -262,7 +274,7 @@ export class GarageView {
   /** Draws the current frame and returns it as a JPEG data URL. */
   capture(): string {
     this.render();
-    return this.renderer.domElement.toDataURL('image/jpeg', 0.85);
+    return photoOf(this.renderer.domElement);
   }
 
   /** Frames the car and the driver beside it. */

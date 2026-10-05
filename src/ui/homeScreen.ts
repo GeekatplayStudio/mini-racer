@@ -233,7 +233,7 @@ export function mountHome(app: App, gridSize: number): Screen {
     team.scrollTop = teamScroll;
 
     // --- Circuit ----------------------------------------------------------------
-    const laps = track.defaultLaps * DISTANCES[prefs.distance].laps;
+    const laps = track.defaultLaps * (DISTANCES[prefs.distance]?.laps ?? 1);
     const fee = entryFee(track);
     const best = profile.history
       .filter((r) => r.trackId === track.id && Number.isFinite(r.bestLap) && r.bestLap > 0)

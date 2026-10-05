@@ -1,5 +1,5 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAX_HISTORY, Profile, upgradeProfile } from '../src/game/profile';
 import { NAME_PATTERN, PASSWORD_MAX, PASSWORD_MIN } from '../src/net/protocol';
@@ -52,11 +52,44 @@ function readJson<T>(file: string): T | null {
   }
 }
 
+/** Waits without giving up the thread; only for the short retries below. */
+const sleepSync = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+/** Errors a rename gives on Windows while a virus scanner or indexer briefly holds the file. */
+const BUSY = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
 /** Writes beside the target and renames over it, so a crash never leaves half a file. */
 function writeJson(file: string, value: unknown): void {
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(value));
-  renameSync(tmp, file);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(tmp, file);
+      return;
+    } catch (err) {
+      if (attempt >= 5 || !BUSY.has((err as NodeJS.ErrnoException).code ?? '')) {
+        rmSync(tmp, { force: true });
+        throw err;
+      }
+      sleepSync(10 * 2 ** attempt);
+    }
+  }
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** A car the server can read: the game checks the rest when it is raced. */
+function sound(car: unknown): boolean {
+  return isObject(car) && typeof car.id === 'string' && isObject(car.parts);
+}
+
+/** A driver the server can bank a race to. */
+function soundDriver(d: unknown): boolean {
+  if (!isObject(d) || !isObject(d.def)) return false;
+  const { id, racesCompleted, skills } = d.def;
+  return typeof id === 'string' && typeof racesCompleted === 'number' && Number.isFinite(racesCompleted) && racesCompleted >= 0 && isObject(skills);
 }
 
 /**
@@ -70,6 +103,8 @@ export function cleanProfile(raw: unknown): Profile {
   }
   if (typeof p.money !== 'number' || !Number.isFinite(p.money)) throw new ApiError(400, 'That is not a team file');
   if (p.cars.length > 20 || p.drivers.length > 20) throw new ApiError(400, 'Too many cars or drivers');
+  // A malformed entry would break banking a race result later, on the server.
+  if (!p.cars.every(sound) || !p.drivers.every(soundDriver)) throw new ApiError(400, 'That is not a team file');
   const out = upgradeProfile({ ...p, photos: [] });
   // Test mode makes entries free; it never reaches a team kept online.
   out.admin = false;

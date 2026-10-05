@@ -40,8 +40,15 @@ export class RaceRun {
   /**
    * @param simSpeed simulated seconds per real second; 1 in play, more only in tests.
    * @param cooldownMs how long the cars roll on after the finish before the run closes.
+   * @param maxRaceMs real time after which a race without a finish is stopped.
    */
-  constructor(readonly race: Race, private readonly hooks: RaceRunHooks, private readonly simSpeed = 1, private readonly cooldownMs = 20000) {}
+  constructor(
+    readonly race: Race,
+    private readonly hooks: RaceRunHooks,
+    private readonly simSpeed = 1,
+    private readonly cooldownMs = 20000,
+    private readonly maxRaceMs = MAX_RACE_MS,
+  ) {}
 
   start(): void {
     this.last = this.started = performance.now();
@@ -63,7 +70,12 @@ export class RaceRun {
     } catch (err) {
       console.error('Race stopped by an error:', err);
       this.stop();
-      this.hooks.closed(true);
+      // Nothing thrown from a timer may reach the process.
+      try {
+        this.hooks.closed(true);
+      } catch (closeErr) {
+        console.error('Race could not be closed cleanly:', closeErr);
+      }
     }
   }
 
@@ -106,7 +118,7 @@ export class RaceRun {
     if (this.finishedAt && now - this.finishedAt > this.cooldownMs) {
       this.stop();
       this.hooks.closed(false);
-    } else if (!this.finishedAt && now - this.started > MAX_RACE_MS) {
+    } else if (!this.finishedAt && now - this.started > this.maxRaceMs) {
       this.stop();
       this.hooks.closed(true);
     }

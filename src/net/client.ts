@@ -132,9 +132,13 @@ export class NetClient {
     return this.api('GET', '/api/profile');
   }
 
-  /** Uploads the team; with `base`, only over that revision of the stored one. */
+  /**
+   * Uploads the team; with `base`, only over that revision of the stored one.
+   * Photos stay on the device: the server drops them anyway, and a few of them
+   * would take the upload past the server's size limit.
+   */
   saveProfile(profile: Profile, base?: number): Promise<{ rev: number }> {
-    return this.api('PUT', '/api/profile', { profile, base });
+    return this.api('PUT', '/api/profile', { profile: { ...profile, photos: [] }, base });
   }
 
   /** Opens the lobby connection and keeps it open, reconnecting after drops. */

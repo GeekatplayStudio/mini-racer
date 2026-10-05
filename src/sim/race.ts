@@ -219,9 +219,12 @@ export class Race {
   private readonly lapFuel: number[];
   /** Most line crossings each car has made; backing over the line and across again is not a lap. */
   private readonly lapsCounted: number[];
+  /** Pit stops each car had made when it last crossed the line. */
+  private readonly lapStops: number[];
+  /** Cars that took the flag this step; announced once the order is settled. */
+  private readonly flagged: RaceCar[] = [];
   private readonly directives: Directive[];
   private leaderFinished = false;
-  private finishers = 0;
   private endTimer = 0;
 
   constructor(
@@ -286,6 +289,7 @@ export class Race {
     this.order = [...this.cars];
     this.lapFuel = this.cars.map((c) => c.state.fuel);
     this.lapsCounted = this.cars.map(() => 0);
+    this.lapStops = this.cars.map(() => 0);
     this.directives = this.cars.map(() => ({}));
     this.seen = [...this.cars];
     if (this.weather !== 'clear') {
@@ -519,6 +523,8 @@ export class Race {
     }
 
     this.updateOrder();
+    for (const car of this.flagged) this.events.push({ type: 'finish', car: car.id, position: car.position });
+    this.flagged.length = 0;
 
     if (this.phase === 'racing') {
       const out = this.cars.reduce((n, c) => n + (c.finished || c.retired ? 1 : 0), 0);
@@ -560,7 +566,7 @@ export class Race {
       this.hazardTimer = this.rng.range(8, 26) / Math.sqrt(this.maxHazards);
       const s = this.rng.range(track.pit.sOut + 200, track.pit.sIn - 200);
       // Not where a car is about to arrive.
-      const clear = this.cars.every((c) => c.parked || mod(s - c.loc.s, L) > 220 || mod(s - c.loc.s, L) > L - 30);
+      const clear = this.cars.every((c) => c.parked || (mod(s - c.loc.s, L) > 220 && mod(c.loc.s - s, L) > 30));
       if (clear && s > 0 && s < L) {
         let roll = this.rng.next() * HAZARD_KINDS.reduce((sum, k) => sum + k.weight, 0);
         let def = HAZARD_KINDS[0];
@@ -613,7 +619,7 @@ export class Race {
           const dx = st.x + cosH * o - h.x, dy = st.y + sinH * o - h.y;
           const dist = Math.hypot(dx, dy);
           const overlap = r + h.radius - dist;
-          if (overlap <= 0 || dist < 1e-6) continue;
+          if (!(overlap > 0) || !(dist >= 1e-6)) continue;
           const nx = dx / dist, ny = dy / dist;
           st.x += nx * overlap;
           st.y += ny * overlap;
@@ -698,7 +704,12 @@ export class Race {
     const side = pit.side === 1 ? 1 : -1;
     const lane = side * pit.offset;
     const toEntry = mod(pit.sIn - s, L);
-    if (car.pitPhase === PitPhase.None && car.pitRequested && toEntry < 160 && toEntry > 5 && lapsLeft > 0) {
+    if (car.pitPhase === PitPhase.None && car.pitRequested && (lapsLeft <= 1 || this.leaderFinished)) {
+      // The flag comes before another lap would: a stop now only loses places.
+      car.pitRequested = false;
+      this.events.push({ type: 'pit', car: car.id, stage: 'cancelled', seconds: 0 });
+    }
+    if (car.pitPhase === PitPhase.None && car.pitRequested && toEntry < 160 && toEntry > 5) {
       car.pitPhase = PitPhase.Inbound;
     }
 
@@ -737,7 +748,6 @@ export class Race {
         car.pitStops++;
         car.pitRequested = false;
         car.pitPhase = PitPhase.Outbound;
-        this.lapFuel[car.id] = st.fuel;
         this.events.push({ type: 'pit', car: car.id, stage: 'out', seconds: 0 });
       }
     } else if (car.pitPhase === PitPhase.Outbound) {
@@ -789,10 +799,11 @@ export class Race {
         }
         // A lap with a stop in it says nothing about fuel use.
         const burned = this.lapFuel[car.id] - car.state.fuel;
-        if (burned > 0) car.fuelPerLap = burned;
+        if (burned > 0 && car.pitStops === this.lapStops[car.id]) car.fuelPerLap = burned;
         this.events.push({ type: 'lap', car: car.id, lap: car.crossings - 1, time: lapTime, best, fastest });
       }
       this.lapFuel[car.id] = car.state.fuel;
+      this.lapStops[car.id] = car.pitStops;
       car.lapStart = this.time;
       car.brain.onNewLap();
       const done = car.crossings - 1;
@@ -800,8 +811,7 @@ export class Race {
         car.finished = true;
         car.finishTime = this.time;
         this.leaderFinished = true;
-        this.finishers++;
-        this.events.push({ type: 'finish', car: car.id, position: this.finishers });
+        this.flagged.push(car);
       }
     } else if (prevS < L * 0.25 && s > L * 0.75) {
       car.crossings--;
@@ -824,16 +834,22 @@ export class Race {
     for (let i = 0; i < order.length; i++) {
       const car = order[i];
       const pos = i + 1;
-      if (pos < car.position && this.phase === 'racing' && !car.finished && this.time > 3) {
+      // A car moving up because another retired or stopped has not overtaken anyone.
+      if (pos < car.position && this.phase === 'racing' && !car.finished && this.time > 3 && !order[i + 1].retired) {
         this.events.push({ type: 'overtake', car: car.id, passed: order[i + 1].id, position: pos });
       }
       car.position = pos;
     }
   }
 
+  /**
+   * Race order. Distance decides it, frozen at the flag for finishers, so a
+   * lapped car that takes the flag stays behind cars on the lead lap still
+   * finishing theirs. Cars out of the race drop to the back.
+   */
   private ahead(a: RaceCar, b: RaceCar): boolean {
-    if (a.finished !== b.finished) return a.finished;
-    if (a.finished) return a.finishTime < b.finishTime;
+    if (a.retired !== b.retired) return b.retired;
+    if (a.finished && b.finished) return a.crossings !== b.crossings ? a.crossings > b.crossings : a.finishTime < b.finishTime;
     return a.progress > b.progress + 0.01;
   }
 
@@ -849,7 +865,7 @@ export class Race {
         const dx = b.state.x - a.state.x;
         const dy = b.state.y - a.state.y;
         const reach = (a.spec.length + b.spec.length) / 2 + 0.5;
-        if (dx * dx + dy * dy > reach * reach) continue;
+        if (!(dx * dx + dy * dy <= reach * reach)) continue;
         for (let ca = -1; ca <= 1; ca += 2) {
           for (let cb = -1; cb <= 1; cb += 2) {
             this.collideCircles(a, ca, b, cb);
@@ -873,7 +889,7 @@ export class Race {
     const dx = bx - ax, dy = by - ay;
     const dist = Math.hypot(dx, dy);
     const overlap = ra + rb - dist;
-    if (overlap <= 0 || dist < 1e-6) return;
+    if (!(overlap > 0) || !(dist >= 1e-6)) return;
     const nx = dx / dist, ny = dy / dist;
 
     sa.x -= nx * overlap * 0.5;
