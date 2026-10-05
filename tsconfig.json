@@ -14,5 +14,5 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["src", "tests", "e2e", "tools", "*.ts"]
+  "include": ["src", "server", "tests", "e2e", "tools", "*.ts"]
 }

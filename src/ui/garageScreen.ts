@@ -23,6 +23,7 @@ import { TRACKS } from '../data/tracks';
 import { ratingGrade, specSheet } from './specSheet';
 import type { App, Screen } from './appTypes';
 import { h, hexColor, lapText, money } from './dom';
+import { paneTitle } from './widgets';
 
 interface StatRow {
   key: keyof CarStats;
@@ -94,17 +95,17 @@ export function mountGarage(app: App): Screen {
   const carsRow = h('div', { class: 'cars' });
   const head = h('div', { class: 'car-head' });
   const slotList = h('div', { class: 'scroll' });
-  const left = h('div', { class: 'pane g-left' }, h('div', { class: 'title' }, 'Your garage', h('span', { text: `${MAX_CARS} bays` })), carsRow, head, slotList);
+  const left = h('div', { class: 'pane g-left' }, paneTitle('wrench', 'Your garage', h('span', { text: `${MAX_CARS} bays` })), carsRow, head, slotList);
 
   const partsTitle = h('span');
   const partsNote = h('span');
   const partList = h('div', { class: 'scroll' });
-  const right = h('div', { class: 'pane g-right' }, h('div', { class: 'title' }, partsTitle, partsNote), partList);
+  const right = h('div', { class: 'pane g-right' }, paneTitle('cog', partsTitle, partsNote), partList);
 
   const statsTitle = h('span', { text: 'Car stats' });
   const statsNote = h('span');
   const statGrid = h('div', { class: 'stat-grid' });
-  const stats = h('div', { class: 'pane g-stats' }, h('div', { class: 'title' }, statsTitle, statsNote), statGrid);
+  const stats = h('div', { class: 'pane g-stats' }, paneTitle('chart', statsTitle, statsNote), statGrid);
 
   const explodeBtn = h('button', { class: 'btn', text: 'Lift body', onclick: () => {
     app.garage.setExploded(!app.garage.exploded);
@@ -120,9 +121,9 @@ export function mountGarage(app: App): Screen {
       sheetPane.classList.toggle('hidden', !sheetOpen);
       showStats(derived, null, derived?.stats ? 'Benchmark lap' : '');
     } }),
-    h('span', { class: 'break' }),
-    h('span', { class: 'dim', text: 'Paint' }), baseSw,
-    h('span', { class: 'dim', text: 'Stripe' }), accentSw,
+    h('span', { class: 'sep' }),
+    h('span', { class: 'paint' }, 'Paint', baseSw),
+    h('span', { class: 'paint' }, 'Stripe', accentSw),
   );
   const hint = h('div', { class: 'g-hint', text: 'Drag: rotate   Wheel: zoom   Right-drag: pan' });
   let sheetOpen = false;
@@ -157,8 +158,15 @@ export function mountGarage(app: App): Screen {
       return;
     }
     const d = derived;
+    const slots = SLOTS.filter((s) => slotApplies(c, s));
+    const fitted = slots.filter((s) => c.parts[s.id]).length;
     head.append(
       h('div', { class: 'name', text: chassisName(c) }),
+      h('div', { class: 'fitted' },
+        h('span', { text: 'Parts fitted' }),
+        h('div', { class: 'meter' }, h('i', { style: { width: `${Math.round((fitted / Math.max(1, slots.length)) * 100)}%` } })),
+        h('span', { text: `${fitted} / ${slots.length}` }),
+      ),
       h('div', { class: 'row' },
         d?.legal
           ? h('span', { class: 'badge ok', text: 'Race legal' })
@@ -228,11 +236,13 @@ export function mountGarage(app: App): Screen {
       return;
     }
     let group = '';
-    for (const s of SLOTS) {
-      if (!slotApplies(c, s)) continue;
+    const applied = SLOTS.filter((s) => slotApplies(c, s));
+    for (const s of applied) {
       if (s.group !== group) {
         group = s.group;
-        slotList.append(h('div', { class: 'group', text: group }));
+        const inGroup = applied.filter((x) => x.group === group);
+        const done = inGroup.filter((x) => c.parts[x.id]).length;
+        slotList.append(h('div', { class: 'group' }, h('span', { text: group }), h('span', { class: `count${done < inGroup.length ? ' short' : ''}`, text: `${done}/${inGroup.length}` })));
       }
       const f = c.parts[s.id];
       const p = f ? getPart(f.part) : undefined;
@@ -246,8 +256,10 @@ export function mountGarage(app: App): Screen {
           renderParts();
         },
       },
+        h('i', { class: `dot${p ? '' : ' none'}` }),
         h('span', { text: s.label }),
         h('span', { class: `fit${p ? '' : ' none'}`, text: p ? alias(`${p.maker} ${p.name}`) : 'Empty' }),
+        h('span', { class: `cond ${f?.cond ?? ''}`, text: f ? CONDITIONS[f.cond].label : '' }),
       ));
     }
   };
@@ -353,13 +365,32 @@ export function mountGarage(app: App): Screen {
         class: `part${fittedHere ? ' fitted' : ''}${why ? ' locked' : ''}`,
         onleave: () => preview(null, 'new'),
       },
-        h('div', { class: 'pname', text: alias(part.name) }),
-        h('div', { class: 'maker' }, h('span', { text: alias(part.maker) }), h('span', { text: '★'.repeat(part.tier) })),
+        h('div', { class: 'pname' }, h('span', { text: alias(part.name) }), h('span', { class: 'gold', text: '★'.repeat(part.tier) })),
+        h('div', { class: 'maker', text: alias(part.maker) }),
         h('div', { class: 'note', text: why ?? part.note }),
+        c && !why && !fittedHere ? deltas(c, part) : null,
         h('div', { class: 'chips' }, ...chips(part).map((t) => h('span', { class: 'chip', text: t }))),
         buy,
       ));
     }
+  };
+
+  /** Green and red pills: what fitting the part new would change on this car. */
+  const deltas = (c: CarBuild, part: Part): HTMLElement | null => {
+    const was = derived?.stats;
+    const now = deriveCar({ ...c, parts: { ...c.parts, [part.slot]: { part: part.id, cond: 'new' } } }, app.ref).stats;
+    if (!was || !now) return null;
+    const pills: HTMLElement[] = [];
+    const add = (diff: number, text: string, better: boolean, min: number): void => {
+      if (Math.abs(diff) >= min) pills.push(h('span', { class: `dpill ${better ? 'good' : 'bad'}`, text }));
+    };
+    const sign = (v: number, digits = 0): string => `${v > 0 ? '+' : ''}${v.toFixed(digits)}`;
+    add(now.rating - was.rating, `Rating ${sign(now.rating - was.rating)}`, now.rating > was.rating, 0.5);
+    add(now.lapTime - was.lapTime, `Lap ${sign(now.lapTime - was.lapTime, 2)} s`, now.lapTime < was.lapTime, 0.005);
+    add(now.powerHp - was.powerHp, `${sign(now.powerHp - was.powerHp)} hp`, now.powerHp > was.powerHp, 0.5);
+    add(now.massKg - was.massKg, `${sign(now.massKg - was.massKg)} kg`, now.massKg < was.massKg, 0.5);
+    add((now.reliability - was.reliability) * 100, `Rel ${sign((now.reliability - was.reliability) * 100, 1)}%`, now.reliability > was.reliability, 0.05);
+    return h('div', { class: 'deltas' }, h('span', { class: 'cap', text: 'Fitted new' }), ...(pills.length ? pills : [h('span', { class: 'dpill', text: 'No change' })]));
   };
 
   const renderPaint = (): void => {

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const MAX_PUFFS = 500;
+const MAX_PUFFS = 800;
 const MAX_SKIDS = 3500;
 
 interface Puff {

@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { RacingLine } from '../sim/line';
+import type { Weather } from '../sim/race';
 import { Rng } from '../sim/rng';
 import { KERB_WIDTH, Track } from '../sim/track';
+import { Mesher, paintMaterial } from './mesher';
 import {
   asphaltTexture,
   checkerTexture,
@@ -10,6 +12,7 @@ import {
   gravelTexture,
   paddockTexture,
   pitBuildingTexture,
+  snowGrassTexture,
 } from './textures';
 
 export interface TrackScene {
@@ -124,7 +127,7 @@ function placeBeside(obj: THREE.Object3D, track: Track, s: number, side: number,
   obj.rotation.y = -track.heading[track.indexAt(s)] + (side === 0 ? Math.PI : 0);
 }
 
-export function buildTrackScene(track: Track, line: RacingLine): TrackScene {
+export function buildTrackScene(track: Track, line: RacingLine, weather: Weather = 'clear'): TrackScene {
   const group = new THREE.Group();
   const hw = track.halfWidth;
   const n = track.n;
@@ -132,18 +135,20 @@ export function buildTrackScene(track: Track, line: RacingLine): TrackScene {
   const red = new THREE.Color(0xd63a34);
 
   // Ground.
-  const grassTex = grassTexture();
+  const snow = weather === 'snow';
+  const rain = weather === 'rain';
+  const grassTex = snow ? snowGrassTexture() : grassTexture();
   let reach = 0;
   for (let i = 0; i < n; i++) reach = Math.max(reach, Math.abs(track.x[i]), Math.abs(track.y[i]));
   const groundSize = Math.ceil((reach * 2 + 900) / 16) * 16;
   grassTex.repeat.set(groundSize / 16, groundSize / 16);
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundSize, groundSize), lambert({ map: grassTex }));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundSize, groundSize), lambert({ map: grassTex, color: rain ? 0xbcc8bc : 0xffffff }));
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   group.add(ground);
 
   // Gravel traps.
-  const gravelMat = lambert({ map: gravelTexture() });
+  const gravelMat = lambert({ map: gravelTexture(), color: snow ? 0xeef2f8 : rain ? 0xb4b0a8 : 0xffffff, emissive: snow ? 0x3a4048 : 0x000000 });
   for (let side = 0; side < 2; side++) {
     const sign = side === 1 ? 1 : -1;
     const mesh = new THREE.Mesh(
@@ -163,10 +168,29 @@ export function buildTrackScene(track: Track, line: RacingLine): TrackScene {
   // Asphalt.
   const road = new THREE.Mesh(
     ribbon(track, { d0: () => -hw - 0.35, d1: () => hw + 0.35, y: 0.024, uvScale: 16 }),
-    lambert({ map: asphaltTexture() }),
+    // Wet tarmac is darker and cooler.
+    lambert({ map: asphaltTexture(), color: rain ? 0x8e96a4 : snow ? 0xc0c6d2 : 0xffffff }),
   );
   road.receiveShadow = true;
   group.add(road);
+
+  if (snow) {
+    // A thin layer settles where the cars do not run; the racing line stays dark.
+    for (const sign of [-1, 1]) {
+      const dust = new THREE.Mesh(
+        ribbon(track, {
+          d0: (i) => (sign < 0 ? -hw - 0.3 : line.offset[i] + 2.4),
+          d1: (i) => (sign < 0 ? line.offset[i] - 2.4 : hw + 0.3),
+          y: 0.031,
+          include: (i) => (sign < 0 ? line.offset[i] - 2.4 > -hw : line.offset[i] + 2.4 < hw),
+          color: () => new THREE.Color(0xeef2f8),
+          alpha: () => 0.3,
+        }),
+        new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }),
+      );
+      group.add(dust);
+    }
+  }
 
   // Rubbered-in racing line, darkest through the corners.
   const rubber = new THREE.Mesh(
@@ -219,7 +243,8 @@ export function buildTrackScene(track: Track, line: RacingLine): TrackScene {
   group.add(buildPits(track, keepOut));
   group.add(buildGrandstands(track, keepOut));
   group.add(buildAdBoards(track));
-  group.add(buildTrees(track, keepOut));
+  group.add(buildMarshalPosts(track));
+  group.add(buildTrees(track, keepOut, snow));
 
   return { group, startLights: lights };
 }
@@ -513,6 +538,17 @@ function buildStand(length: number, crowd: THREE.Texture, roofColor: number): TH
   g.add(box(length + 2, 0.4, 5.5, roofColor, 0, rise + 3.6, depth - 2.2));
   g.add(box(length + 2, 0.45, 0.7, 0xf2f2ec, 0, rise + 3.62, depth - 5.2));
   for (let x = x0 + 2; x <= x1 - 1; x += 9) g.add(box(0.3, 3.4, 0.3, 0x5a6070, x, rise + 1.2, depth - 4.6));
+  // Flags along the back of the roof.
+  const flags = new Mesher();
+  const colors = [0xd8232a, 0xf2c21a, 0x1f6fe0, 0xf4f4f0, 0x1fa85a];
+  let k = 0;
+  for (let x = x0 + 3; x <= x1 - 2; x += Math.max(8, length / 6), k++) {
+    flags.box(0.12, 3.2, 0.12, 0xc8ccd6, x, rise + 5.2, depth + 0.2);
+    flags.box(1.6, 0.9, 0.05, colors[(k + Math.round(length)) % colors.length], x + 0.86, rise + 6.25, depth + 0.2, 0, 0.25, 0);
+  }
+  const flagMesh = new THREE.Mesh(flags.build(), paintMaterial());
+  flagMesh.castShadow = true;
+  g.add(flagMesh);
   return g;
 }
 
@@ -539,6 +575,46 @@ function buildAdBoards(track: Track): THREE.Group {
   return g;
 }
 
+/**
+ * Marshal posts on the outside of each gravel trap: a hut, a flag board and a
+ * tyre stack, all in one mesh. Left out wherever another part of the circuit is close.
+ */
+function buildMarshalPosts(track: Track): THREE.Mesh {
+  const m = new Mesher();
+  const n = track.n;
+  const tyre = 0x1b1c22;
+  for (let side = 0; side < 2; side++) {
+    const sign = side === 1 ? 1 : -1;
+    for (let i = 0; i < n; i++) {
+      // The middle of each run of gravel.
+      if (!track.gravel[side][i] || track.gravel[side][(i + n - 1) % n]) continue;
+      let len = 0;
+      while (len < n && track.gravel[side][(i + len) % n]) len++;
+      const mid = (i + Math.floor(len / 2)) % n;
+      const s = mid * track.ds;
+      if (track.inPitZone(s)) continue;
+      const dist = track.wall[side][mid] + 3.5;
+      const [x, z] = track.pointAt(s, sign * dist);
+      const near = track.nearest(x, z);
+      if (near >= 0 && Math.hypot(x - track.x[near], z - track.y[near]) < track.halfWidth + 12) continue;
+      // Local x along the track, z away from it.
+      m.place(x, 0, z, -track.heading[mid] + (side === 0 ? Math.PI : 0));
+      m.box(2.2, 2.1, 1.8, 0xe8eaf0, 0, 1.05, 1.0);
+      m.box(2.5, 0.2, 2.1, 0xf07a1c, 0, 2.2, 1.0);
+      m.box(1.6, 0.5, 0.05, 0x2a3a50, 0, 1.45, 0.08);
+      m.box(0.08, 3.2, 0.08, 0xc8ccd6, 1.35, 1.6, 0.2);
+      m.box(0.9, 0.6, 0.04, 0xf2c21a, 1.82, 2.85, 0.2);
+      m.box(0.9, 0.6, 0.04, 0x1fa85a, 1.82, 2.2, 0.2);
+      for (let k = 0; k < 3; k++) m.cyl(0.32, 0.32, 0.26, 8, k === 2 ? 0xf4f4f0 : tyre, -1.6, 0.13 + k * 0.27, 0.4);
+    }
+  }
+  m.transform(null);
+  const mesh = new THREE.Mesh(m.build(), paintMaterial());
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
 /** Smooth value noise in 0..1, for clumping trees into woods. */
 function makeNoise(seed: number): (x: number, y: number) => number {
   const hash = (ix: number, iy: number): number => {
@@ -555,7 +631,7 @@ function makeNoise(seed: number): (x: number, y: number) => number {
   };
 }
 
-function buildTrees(track: Track, keepOut: readonly { x: number; z: number; r: number }[]): THREE.Group {
+function buildTrees(track: Track, keepOut: readonly { x: number; z: number; r: number }[], snow = false): THREE.Group {
   const g = new THREE.Group();
   const rng = new Rng(211);
   const noise = makeNoise(77);
@@ -589,7 +665,8 @@ function buildTrees(track: Track, keepOut: readonly { x: number; z: number; r: n
   const trunkGeo = new THREE.CylinderGeometry(0.28, 0.4, 1, 5);
   const blobGeo = new THREE.IcosahedronGeometry(1, 0);
   const coneGeo = new THREE.ConeGeometry(1, 1, 6);
-  const leafMat = lambert({ flatShading: true });
+  // Snow on the leaves: everything lifts toward white.
+  const leafMat = lambert({ flatShading: true, emissive: snow ? 0x5a626e : 0x000000 });
   const trunks = new THREE.InstancedMesh(trunkGeo, lambert({ color: 0x6a4a30, flatShading: true }), trees.length);
   const pines = trees.filter((t) => t.pine);
   const broad = trees.filter((t) => !t.pine);

@@ -3,6 +3,7 @@ import { SLOTS, SlotId } from '../data/parts';
 import type { CarBuild } from '../game/build';
 import { Rng } from '../sim/rng';
 import { GarageCar, buildGarageCar } from './garageCar';
+import { FigureLook, buildDriverFigure } from './driverFigure';
 import { PixelPipeline } from './pixelPipeline';
 
 /** Rows of the low-resolution frame; finer than the race so parts stay readable. */
@@ -249,63 +250,10 @@ export class GarageView {
    * Stands a driver beside the car for a team photo, or removes them for null.
    * Colours are CSS hex strings from the driver's chosen look.
    */
-  setDriver(look: { skin: string; hair: string; suit: string; helmet: string; female: boolean; hairStyle: number; hat: number; glasses: number } | null): void {
+  setDriver(look: FigureLook | null): void {
     this.driverHolder.clear();
     if (!look) return;
-    const g = new THREE.Group();
-    const mat = (c: string | number): THREE.MeshLambertMaterial => new THREE.MeshLambertMaterial({ color: new THREE.Color(c), flatShading: true });
-    const add = (w: number, h: number, d: number, c: string | number, x: number, y: number, z: number, rz = 0): THREE.Mesh => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat(c));
-      m.position.set(x, y, z);
-      m.rotation.z = rz;
-      m.castShadow = true;
-      g.add(m);
-      return m;
-    };
-    const suit = look.suit;
-    const trim = '#f4f4f0';
-    const slim = look.female ? 0.9 : 1;
-    // Boots, legs, torso, arms.
-    for (const s of [-1, 1]) {
-      add(0.13, 0.1, 0.27, '#16171d', s * 0.11, 0.05, 0.03);
-      add(0.15 * slim, 0.82, 0.17, suit, s * 0.11, 0.5, 0);
-      add(0.035, 0.82, 0.175, trim, s * 0.185 * slim, 0.5, 0);
-    }
-    add(0.44 * slim, 0.2, 0.22, suit, 0, 0.98, 0);
-    add(0.5 * slim, 0.42, 0.25, suit, 0, 1.26, 0);
-    add(0.5 * slim, 0.06, 0.255, trim, 0, 1.12, 0);
-    add(0.2, 0.12, 0.26, '#22242c', 0.08, 1.33, 0);
-    add(0.12, 0.6, 0.14, suit, -0.31 * slim, 1.17, 0, -0.08);
-    add(0.1, 0.12, 0.12, look.skin, -0.33 * slim, 0.82, 0);
-    // The other arm holds the helmet against the hip.
-    add(0.12, 0.34, 0.14, suit, 0.31 * slim, 1.3, 0, 0.1);
-    add(0.12, 0.14, 0.34, suit, 0.33 * slim, 1.1, 0.12);
-    const helmet = new THREE.Mesh(new THREE.IcosahedronGeometry(0.17, 1), mat(look.helmet));
-    helmet.position.set(0.36 * slim, 1.0, 0.26);
-    helmet.castShadow = true;
-    g.add(helmet);
-    add(0.2, 0.08, 0.06, '#16202e', 0.36 * slim, 1.02, 0.41);
-    // Collar, neck, head.
-    add(0.2, 0.06, 0.2, trim, 0, 1.5, 0);
-    add(0.11, 0.08, 0.11, look.skin, 0, 1.56, 0);
-    add(0.2, 0.25, 0.22, look.skin, 0, 1.72, 0);
-    add(0.03, 0.05, 0.03, '#b08060', 0, 1.7, 0.115);
-    for (const s of [-1, 1]) add(0.035, 0.03, 0.02, '#16171d', s * 0.05, 1.75, 0.112);
-    if (look.glasses > 0) add(0.2, 0.05, 0.03, look.glasses === 1 ? '#3a3e4c' : '#101014', 0, 1.75, 0.118);
-    if (look.hairStyle > 0 && look.hat !== 1 && look.hat !== 2 && look.hat !== 4) {
-      add(0.22, 0.09, 0.24, look.hair, 0, 1.87, -0.005);
-      add(0.22, 0.2, 0.06, look.hair, 0, 1.76, -0.11);
-      if (look.hairStyle >= 6) add(0.24, 0.32, 0.07, look.hair, 0, 1.64, -0.12);
-      if (look.hairStyle === 4 || look.hairStyle === 10) add(0.1, 0.08, 0.2, look.hair, 0, 1.94, 0.02);
-    }
-    if (look.hat === 1 || look.hat === 2 || look.hat === 4) {
-      add(0.23, 0.1, 0.25, suit, 0, 1.87, 0);
-      if (look.hat !== 4) add(0.2, 0.025, 0.14, suit, 0, 1.83, look.hat === 1 ? 0.17 : -0.17);
-    }
-    if (look.hat === 3) {
-      add(0.26, 0.03, 0.05, '#16171d', 0, 1.87, 0);
-      for (const s of [-1, 1]) add(0.04, 0.1, 0.08, '#16171d', s * 0.12, 1.74, 0);
-    }
+    const g = buildDriverFigure(look);
     g.position.set(1.0, 0, 1.75);
     g.rotation.y = 0.5;
     this.driverHolder.add(g);

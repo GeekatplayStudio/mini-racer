@@ -1,0 +1,106 @@
+/* Online play: sign-in, lobby and game room */
+.online {
+  left: var(--gut, calc(var(--u) * 6));
+  top: var(--screen-top, calc(var(--u) * 27));
+  width: calc(var(--u) * 360);
+  max-height: calc(100vh - var(--screen-top, calc(var(--u) * 27)) - var(--gut, calc(var(--u) * 6)));
+}
+.online-body {
+  padding: calc(var(--u) * 4);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 2.5);
+}
+.net-note {
+  color: var(--dim);
+  text-transform: none;
+  line-height: 1.6;
+}
+.net-form {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 2);
+}
+.net-form input {
+  background: var(--ink);
+  border: var(--bw, var(--u)) solid var(--edge, var(--line));
+  padding: calc(var(--u) * 2);
+  width: 100%;
+  text-transform: none;
+  outline: none;
+}
+.net-form input:focus {
+  border-color: var(--yellow);
+}
+.net-status {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 2);
+}
+.net-status .spacer {
+  flex: 1;
+}
+.net-row {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 3);
+  border: var(--u) solid var(--panel-hi);
+  background: var(--panel);
+  padding: calc(var(--u) * 2.5);
+}
+.net-row .grow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.5);
+}
+.net-row b {
+  font-weight: normal;
+  color: var(--yellow);
+}
+.net-seats {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 1);
+}
+.net-seat {
+  display: grid;
+  grid-template-columns: 1.2fr 2fr auto;
+  gap: calc(var(--u) * 3);
+  align-items: center;
+  border: var(--u) solid var(--panel-hi);
+  background: var(--panel);
+  padding: calc(var(--u) * 1.5) calc(var(--u) * 2.5);
+}
+.net-seat b {
+  font-weight: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.net-seat.me {
+  border-color: var(--yellow);
+}
+.net-seat.ready b {
+  color: var(--green);
+}
+.net-seat.open,
+.net-seat.bot {
+  grid-template-columns: 1.2fr 2fr;
+  opacity: 0.7;
+}
+.pick-row.wrap {
+  flex-wrap: wrap;
+}
+.pick-row.wrap .pick {
+  flex: 0 1 calc(50% - var(--u) * 2);
+}
+.net-choose {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 2);
+}
+.online .choice {
+  flex-wrap: wrap;
+}

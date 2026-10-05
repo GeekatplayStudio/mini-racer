@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { Part, PartLook, SlotId, getPart } from '../data/parts';
 import type { CarBuild } from '../game/build';
-import { buildShell } from './carMesh';
+import { axlesOf, bodyShape, buildLights, buildShell, dressBody } from './carMesh';
+import { Mesher } from './mesher';
 
 /** The detailed, part-by-part car shown in the garage. Nose toward +x, y up. */
 export interface GarageCar {
@@ -108,17 +109,17 @@ export function buildGarageCar(build: CarBuild): GarageCar | null {
   const list = b.bySlot.get('chassis') ?? [];
   list.push(shellMat);
   b.bySlot.set('chassis', list);
-  const shellMesh = new THREE.Mesh(buildShell({ length: L, width: W }, body, build.livery, windows?.c ?? 0x2a3040), shellMat);
+  // The shell, its trim and its numbers are one mesh, so the whole body lifts and fades together.
+  const axles = axlesOf(L, ch.wheelbase, ch.frontWeight, WHEEL_R);
+  const shape = bodyShape({ length: L, width: W }, body, axles);
+  const paint = new Mesher();
+  buildShell(shape, build.livery, paint, paint, axles, windows?.c ?? 0x2a3040);
+  dressBody(paint, shape, body, build.livery, axles, { aero: false, crew: false, mirrors: true });
+  const shellMesh = new THREE.Mesh(paint.build(), shellMat);
   shellMesh.castShadow = true;
   shell.add(shellMesh);
-  for (const s of [-1, 1]) {
-    b.box(shell, 'chassis', build.livery.base, 0.14, 0.1, 0.2, L / 2 - (body.cabinStart + 0.06) * L, body.hoodHeight + 0.14, s * (W / 2 + 0.06));
-    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.36), new THREE.MeshBasicMaterial({ color: 0xfff2b8 }));
-    lamp.position.set(L / 2 - 0.2, body.noseHeight + 0.02, s * W * 0.34);
-    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.5), new THREE.MeshBasicMaterial({ color: 0xc81820 }));
-    tail.position.set(-L / 2 - 0.01, body.deckHeight * 0.78, s * W * 0.3);
-    shell.add(lamp, tail);
-  }
+  const lights = buildLights({ length: L, width: W }, body);
+  shell.add(new THREE.Mesh(lights.head, new THREE.MeshBasicMaterial({ color: 0xfff2b8 })), new THREE.Mesh(lights.tail, new THREE.MeshBasicMaterial({ color: 0xc81820 })));
 
   const splitter = lookOf('splitter');
   if (splitter) {

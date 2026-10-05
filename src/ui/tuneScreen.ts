@@ -19,6 +19,7 @@ import { engineTorque } from '../sim/car';
 import type { App, Screen } from './appTypes';
 import { h, hexColor, lapText, money } from './dom';
 import { specSheet } from './specSheet';
+import { paneTitle, subhead } from './widgets';
 
 type Row = 'ign' | 'lambda' | 'boost';
 
@@ -100,11 +101,11 @@ export function mountTune(app: App): Screen {
 
   const carsRow = h('div', { class: 'cars' });
   const ecuBody = h('div', { class: 'scroll t-body' });
-  const left = h('div', { class: 'pane t-left' }, h('div', { class: 'title' }, 'Engine computer', h('span', { text: 'Click +  Right-click -  Shift x5' })), carsRow, ecuBody);
+  const left = h('div', { class: 'pane t-left' }, paneTitle('tune', 'Engine computer', h('span', { text: 'Click +  Right-click -  Shift x5' })), carsRow, ecuBody);
   const dynoTitle = h('span', { text: 'Dyno' });
   const dynoNote = h('span');
   const dynoBody = h('div', { class: 'scroll t-body' });
-  const right = h('div', { class: 'pane t-right' }, h('div', { class: 'title' }, dynoTitle, dynoNote), dynoBody);
+  const right = h('div', { class: 'pane t-right' }, paneTitle('gauge', dynoTitle, dynoNote), dynoBody);
   const root = h('div', {}, left, right);
 
   const car = (): CarBuild | null => profile.cars.find((c) => c.id === carId) ?? null;
@@ -219,8 +220,8 @@ export function mountTune(app: App): Screen {
 
     // --- Driver switches ----------------------------------------------------
     const range = revLimitRange(hw);
-    ecuBody.append(
-      h('div', { class: 'subhead', text: 'Driver switches' }),
+    const switchCol = h('div', {},
+      subhead('cog', 'Driver switches'),
       h('div', { class: 'switches' },
         stepper('Rev limit', `${map.revLimit} rpm`, (dir, big) => setMap((m) => {
           m.revLimit = Math.min(range.max, Math.max(range.min, m.revLimit + dir * (big ? 250 : 50)));
@@ -238,7 +239,8 @@ export function mountTune(app: App): Screen {
           m.pitLimit = Math.min(ECU_LIMITS.pitLimit.max, Math.max(ECU_LIMITS.pitLimit.min, m.pitLimit + dir * ECU_LIMITS.pitLimit.step));
         })),
       ),
-      h('div', { class: 'actions', style: { justifyContent: 'flex-start' } },
+    );
+    const mapActions = h('div', { class: 'actions', style: { justifyContent: 'flex-start' } },
         h('button', { class: 'btn', text: 'Load safe base map', onclick: () => setMap((m) => {
           const s = safeMap(hw);
           m.ign = s.ign;
@@ -252,7 +254,6 @@ export function mountTune(app: App): Screen {
           app.commit();
           render();
         } }),
-      ),
     );
 
     // --- Chassis set-up -----------------------------------------------------
@@ -266,8 +267,8 @@ export function mountTune(app: App): Screen {
       input.addEventListener('change', () => set(Number(input.value)));
       return h('div', { class: 'slider' }, h('span', { text: label }), input, h('span', { text }));
     };
-    ecuBody.append(
-      h('div', { class: 'subhead', text: 'Chassis set-up' }),
+    const setupCol = h('div', {},
+      subhead('car', 'Chassis set-up'),
       slider('Rear wing angle', setup.wing, SETUP_LIMITS.wing.min, SETUP_LIMITS.wing.max, `${setup.wing > 0 ? '+' : ''}${setup.wing}`, (v) => setSetup((s) => {
         s.wing = v;
       })),
@@ -281,6 +282,7 @@ export function mountTune(app: App): Screen {
         s.fuel = v;
       })),
     );
+    ecuBody.append(h('div', { class: 't-cols' }, switchCol, setupCol), mapActions);
 
     // --- Dyno and results ---------------------------------------------------
     const s = d.stats;

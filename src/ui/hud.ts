@@ -1,8 +1,11 @@
-import type { RaceSession } from '../game/raceSetup';
 import { SHOW_REFERENCE_NAMES, alias } from '../data/naming';
+import { DriverLook, WEATHERS } from '../game/profile';
+import type { RaceSession } from '../game/raceSetup';
 import { Command, PitPhase, RaceCar, RaceEvent } from '../sim/race';
-import { COMMANDS, banter } from './radio';
 import type { TrackDef } from '../sim/track';
+import { IconName, icon } from './icons';
+import { drawFace, faceMouthRow, lookFor } from './portrait';
+import { COMMANDS, banter } from './radio';
 
 /** Circuit name as shown to the player. */
 export function trackTitle(def: TrackDef): string {
@@ -36,6 +39,26 @@ interface TowerRow {
 }
 
 const RPM_SEGMENTS = 24;
+const RADIO_MAX = 4;
+const RADIO_SECONDS = 7;
+
+/** Who a radio message comes from: a driver, by car id, or one of the voices without a face. */
+type Voice = { car: number } | 'wall' | 'marshal' | 'control';
+
+const VOICES: Record<'wall' | 'marshal' | 'control', { label: string; icon: IconName }> = {
+  wall: { label: 'Pit wall', icon: 'headset' },
+  marshal: { label: 'Marshals', icon: 'marshal' },
+  control: { label: 'Race control', icon: 'flag' },
+};
+
+const WEATHER_ICONS: Record<string, IconName> = { clear: 'sun', rain: 'rain', snow: 'snow' };
+const GROUP_LABELS = { pace: 'Pace', stance: 'Racecraft', pit: 'Pit' } as const;
+
+/** Dark or light ink, whichever reads better on the colour. */
+function inkOn(color: number): string {
+  const lum = 0.299 * (color >> 16) + 0.587 * ((color >> 8) & 255) + 0.114 * (color & 255);
+  return lum > 140 ? '#0d0f1e' : '#f4f4f0';
+}
 
 /** Race overlay: timing tower, session info, dashboard, minimap and messages. */
 export class Hud {
@@ -51,6 +74,8 @@ export class Hud {
   private readonly speed: HTMLElement;
   private readonly rpm: HTMLElement[] = [];
   private readonly bars: Record<'thr' | 'brk' | 'tyre' | 'fuel', HTMLElement>;
+  private readonly barText: Record<'tyre' | 'fuel', HTMLElement>;
+  private readonly looks = new Map<number, DriverLook>();
   private readonly lights: HTMLElement;
   private readonly lamps: HTMLElement[] = [];
   private readonly banner: HTMLElement;
@@ -64,6 +89,8 @@ export class Hud {
   private radioItems: { node: HTMLElement; left: number }[] = [];
   private readonly cmdButtons = new Map<Command, HTMLElement>();
   private pitLine!: HTMLElement;
+  private pitState!: HTMLElement;
+  private pitDamage!: HTMLElement;
   private lastBanter = -10;
   private slowTimer = 0;
   private resultsShown = false;
@@ -101,6 +128,12 @@ export class Hud {
     // Session panel.
     const sessionPanel = el('div', 'panel session');
     sessionPanel.append(el('div', 'track', trackTitle(track.def)));
+    const weather = WEATHERS.find((w) => w.id === race.weather);
+    if (weather) {
+      const tag = el('div', `weather ${weather.id}`);
+      tag.append(icon(WEATHER_ICONS[weather.id] ?? 'sun'), document.createTextNode(weather.label));
+      sessionPanel.append(tag);
+    }
     this.clock = el('div', 'clock', '0:00.000');
     this.best = el('div', 'small');
     this.fastest = el('div', 'small fastest');
@@ -127,11 +160,14 @@ export class Hud {
       this.rpm.push(seg);
     }
     const bars = el('div', 'bars');
+    const values: HTMLElement[] = [];
     const makeBar = (label: string, cls: string): HTMLElement => {
       const bar = el('div', `bar ${cls}`);
       const fill = el('i');
       bar.append(fill);
-      bars.append(el('span', '', label), bar);
+      const value = el('b');
+      values.push(value);
+      bars.append(el('span', '', label), bar, value);
       return fill;
     };
     this.bars = {
@@ -140,6 +176,7 @@ export class Hud {
       tyre: makeBar('Tyre', 'tyre'),
       fuel: makeBar('Fuel', 'fuel'),
     };
+    this.barText = { tyre: values[2], fuel: values[3] };
     dash.append(driverLine, main, rpm, bars);
     root.append(dash);
 
@@ -178,18 +215,27 @@ export class Hud {
     if (this.onCommand) {
       const bar = el('div', 'cmdbar');
       let group = '';
+      let box = bar;
       for (const c of COMMANDS) {
-        if (c.group !== group && group) bar.append(el('span', 'sep'));
-        group = c.group;
+        if (c.group !== group) {
+          group = c.group;
+          box = el('div', 'cmd-group');
+          box.append(el('span', 'cap', GROUP_LABELS[c.group]));
+          bar.append(box);
+        }
         const btn = el('button', 'cmd');
+        btn.title = c.call;
         btn.append(el('b', '', c.key), document.createTextNode(` ${c.label}`));
         btn.addEventListener('click', () => this.order(c.id));
-        bar.append(btn);
+        box.append(btn);
         this.cmdButtons.set(c.id, btn);
       }
       root.append(bar);
     }
     this.pitLine = el('div', 'pitline');
+    this.pitState = el('span', 'state');
+    this.pitDamage = el('span', 'hurt');
+    this.pitLine.append(this.pitState, this.pitDamage);
     dash.append(this.pitLine);
 
     this.results = el('div', 'panel results hidden');
@@ -249,15 +295,49 @@ export class Hud {
   order(command: Command): void {
     const c = COMMANDS.find((x) => x.id === command);
     if (!c || !this.onCommand) return;
-    this.say(`Pit wall: ${c.call}.`, 'call');
+    this.say(`${c.call}.`, 'call', 'wall');
     this.onCommand(command);
   }
 
-  private say(text: string, style = ''): void {
-    const node = el('div', `msg ${style}`, text);
+  private lookOf(car: number): DriverLook {
+    let look = this.looks.get(car);
+    if (!look) {
+      const entry = this.session.entries[car];
+      look = entry.look ?? lookFor(`${entry.driver.name}/${entry.driver.id}`);
+      this.looks.set(car, look);
+    }
+    return look;
+  }
+
+  /** Adds a message to the radio feed: a driver's face or a voice icon, a name tag and the words. */
+  private say(text: string, style = '', from: Voice = 'control'): void {
+    const node = el('div', `msg ${style}`);
+    const who = el('div', 'who');
+    const tag = el('span', 'tag');
+    if (typeof from === 'object') {
+      const entry = this.session.entries[from.car];
+      const look = this.lookOf(from.car);
+      const face = el('canvas', 'face');
+      drawFace(face, look);
+      const mouth = el('i', 'mouth');
+      mouth.style.top = `${(faceMouthRow(look) / 32) * 100}%`;
+      who.append(face, mouth);
+      node.classList.add('driver');
+      tag.textContent = entry.driver.code;
+      tag.style.background = hex(entry.livery.base);
+      tag.style.color = inkOn(entry.livery.base);
+      who.style.borderColor = hex(entry.livery.base);
+    } else {
+      who.append(icon(VOICES[from].icon));
+      node.classList.add('voice', from);
+      tag.textContent = VOICES[from].label;
+    }
+    const bubble = el('div', 'bubble');
+    bubble.append(tag, el('span', 'text', text));
+    node.append(who, bubble);
     this.radioBox.append(node);
-    this.radioItems.push({ node, left: 7 });
-    while (this.radioItems.length > 5) this.radioItems.shift()?.node.remove();
+    this.radioItems.push({ node, left: RADIO_SECONDS });
+    while (this.radioItems.length > RADIO_MAX) this.radioItems.shift()?.node.remove();
   }
 
   handleEvents(events: readonly RaceEvent[], focusCar: number): void {
@@ -267,19 +347,19 @@ export class Hud {
     for (const ev of events) {
       if (ev.type === 'radio' && ev.car === player) {
         const c = COMMANDS.find((x) => x.id === ev.command);
-        if (c) this.say(`${code(ev.car)}: ${ev.obeyed ? c.yes : c.no}`, ev.obeyed ? 'reply' : 'refuse');
+        if (c) this.say(ev.obeyed ? c.yes : c.no, ev.obeyed ? 'reply' : 'refuse', { car: ev.car });
       } else if (ev.type === 'pit') {
-        if (ev.stage === 'called' && ev.car === player) this.say(`${code(ev.car)}: Tyres or fuel are low. Boxing this lap.`, 'reply');
+        if (ev.stage === 'called' && ev.car === player) this.say('Tyres or fuel are low. Boxing this lap.', 'reply', { car: ev.car });
         else if (ev.stage === 'in') this.say(`${code(ev.car)} is in the pits: ${ev.seconds.toFixed(1)} s stop.`, ev.car === player ? 'call' : '');
-        else if (ev.stage === 'out' && ev.car === player) this.say(`${code(ev.car)}: Fresh tyres, full of fuel. Go!`, 'reply');
+        else if (ev.stage === 'out' && ev.car === player) this.say('Fresh tyres, full of fuel. Go!', 'reply', { car: ev.car });
       } else if (ev.type === 'hazard') {
         const what = { oil: 'Oil', wreck: 'A crashed car', animal: 'An animal', tyre: 'A loose tyre', debris: 'Debris' }[ev.kind];
-        if (ev.stage === 'appeared') this.say(`Marshals: yellow flag. ${what} on the track.`, 'call');
+        if (ev.stage === 'appeared') this.say(`Yellow flag. ${what} on the track.`, 'call', 'marshal');
         else if (ev.stage === 'hit' && ev.car >= 0) this.say(`${code(ev.car)} hit ${what.toLowerCase()}!`, ev.car === player ? 'refuse' : '');
       } else if (ev.type === 'damage') {
         if (ev.car === player || ev.car === focusCar) {
           const where = { front: 'the nose', rear: 'the tail', left: 'the left side', right: 'the right side' }[ev.zone];
-          this.say(`${code(ev.car)}: ${ev.level === 2 ? 'Heavy damage to' : 'Damage to'} ${where}. Still running, but slower.`, 'refuse');
+          this.say(`${ev.level === 2 ? 'Heavy damage to' : 'Damage to'} ${where}. Still running, but slower.`, 'refuse', { car: ev.car });
         }
       } else if (ev.type === 'retire') {
         this.say(`${code(ev.car)} is out: ${ev.reason === 'fuel' ? 'out of fuel' : 'tyre failure'}.`, 'refuse');
@@ -290,7 +370,7 @@ export class Hud {
         if (involved.length && (involved.includes(focusCar) || involved.includes(player) || race.steps % 3 === 0)) {
           const line = banter(ev, code, race.steps + involved[0] * 7);
           if (line) {
-            this.say(line);
+            this.say(line.text, '', { car: line.car });
             this.lastBanter = race.time;
           }
         }
@@ -369,8 +449,10 @@ export class Hud {
       : car.pitPhase === PitPhase.Stopped ? `In the box ${Math.max(0, car.pitTimer).toFixed(0)} s`
       : car.pitPhase !== PitPhase.None ? 'Pit lane'
       : car.pitRequested ? 'Box this lap' : car.pitMode === 'auto' ? 'Pit: auto' : 'Pit: your call';
-    const hurt = st.damage >= 0.02 ? `  Damage ${Math.round(st.damage * 100)}%` : '';
-    this.pitLine.textContent = `Fuel ${race.fuelLapsLeft(car).toFixed(1)} laps  Tyres ${Math.round((1 - st.tyreWear) * 100)}%${hurt}  ${pit}`;
+    this.pitState.textContent = pit;
+    this.pitDamage.textContent = st.damage >= 0.02 ? `Damage ${Math.round(st.damage * 100)}%` : '';
+    this.barText.tyre.textContent = `${Math.round((1 - st.tyreWear) * 100)}%`;
+    this.barText.fuel.textContent = `${race.fuelLapsLeft(car).toFixed(1)} laps`;
     this.pitLine.classList.toggle('warn', race.fuelLapsLeft(car) < 2 || st.tyreWear > 0.8 || st.damage > 0.5);
     const me = race.cars[this.session.playerCar];
     const active = new Set<Command>([

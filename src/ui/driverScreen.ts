@@ -24,6 +24,7 @@ import {
 import { computeSpeedProfile } from '../sim/line';
 import type { App, Screen } from './appTypes';
 import { h, lapText } from './dom';
+import { paneTitle } from './widgets';
 import { LOOK_KEYS, LOOK_LABELS, LOOK_OPTIONS, SWATCH_KEYS, defaultLook, drawPortrait, lookValue } from './portrait';
 
 const NATIONS = ['GBR', 'GER', 'ITA', 'FRA', 'ESP', 'NED', 'BEL', 'USA', 'BRA', 'JPN', 'AUS', 'SWE', 'FIN', 'POL', 'MEX', 'ARG', 'RSA', 'CAN'];
@@ -120,11 +121,11 @@ export function mountDrivers(app: App): Screen {
   let draftLook: DriverLook = defaultLook();
 
   const roster = h('div', { class: 'scroll' });
-  const left = h('div', { class: 'pane d-left' }, h('div', { class: 'title' }, 'Drivers', h('span', { text: `${MAX_DRIVERS} seats` })), roster);
+  const left = h('div', { class: 'pane d-left' }, paneTitle('helmet', 'Drivers', h('span', { text: `${MAX_DRIVERS} seats` })), roster);
   const mainTitle = h('span');
   const mainNote = h('span');
   const body = h('div', { class: 'd-body' });
-  const main = h('div', { class: 'pane d-main' }, h('div', { class: 'title' }, mainTitle, mainNote), body);
+  const main = h('div', { class: 'pane d-main' }, paneTitle('user', mainTitle, mainNote), body);
   const root = h('div', {}, left, main);
 
   const refCar = (): ReturnType<typeof deriveCar>['spec'] => {
@@ -193,7 +194,7 @@ export function mountDrivers(app: App): Screen {
 
   /** Skill rows. In the creator every skill can move both ways; a signed driver can only gain. */
   const skillRows = (def: DriverDef, creating: boolean, onChange: () => void, unlocked = false): HTMLElement => {
-    const box = h('div', { class: 'd-col' });
+    const box = h('div', { class: 'skills' });
     const cap = unlocked ? 25 : creating ? SKILL_CAP_AT_CREATION : skillCap(def);
     const free = unlocked ? 999 : creating ? STARTING_POINTS - pointsSpent(def) : pointsAvailable(def);
     if (unlocked) creating = true;

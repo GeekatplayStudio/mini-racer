@@ -3,6 +3,7 @@ import type { Photo, RaceRecord } from '../game/profile';
 import type { App, Screen } from './appTypes';
 import { h, lapText, money } from './dom';
 import { trackTitle } from './hud';
+import { paneTitle, subhead, tile } from './widgets';
 
 function trackName(id: string): string {
   const t = TRACKS.find((x) => x.id === id);
@@ -44,7 +45,7 @@ export function mountHistory(app: App): Screen {
   );
 
   // Fastest lap at each circuit.
-  const records = h('div', { class: 'facts' });
+  const records = h('div', { class: 'facts wide' });
   for (const t of TRACKS) {
     const laps = profile.history.filter((r) => r.trackId === t.id && Number.isFinite(r.bestLap) && r.bestLap > 0);
     const best = laps.sort((a, b) => a.bestLap - b.bestLap)[0];
@@ -109,13 +110,21 @@ export function mountHistory(app: App): Screen {
   }
   if (!profile.history.length) table.append(h('span', { class: 'dim', style: { gridColumn: '1 / -1' }, text: 'Nothing yet. Every practice and race you run is listed here.' }));
 
-  const left = h('div', { class: 'pane hi-left' }, h('div', { class: 'title' }, 'Career'), h('div', { class: 'scroll t-body' },
-    summary,
-    h('div', { class: 'subhead', text: 'Fastest laps' }), records,
-    h('div', { class: 'subhead', text: 'Drivers' }), drivers,
-    h('div', { class: 'subhead', text: `Photo album  ${profile.photos.length}` }), album,
+  const wins = finished.filter((r) => r.position === 1).length;
+  const tiles = h('div', { class: 'tiles' },
+    tile(String(races.length), 'Races'),
+    tile(String(wins), 'Wins', wins ? 'good' : ''),
+    tile(String(finished.filter((r) => r.position <= 3).length), 'Podiums'),
+    tile(finished.length ? `P${Math.min(...finished.map((r) => r.position))}` : '-', 'Best'),
+  );
+  const left = h('div', { class: 'pane hi-left' }, paneTitle('trophy', 'Career'), h('div', { class: 'scroll t-body' },
+    tiles,
+    subhead('chart', 'Career'), summary,
+    subhead('clock', 'Fastest laps'), records,
+    subhead('helmet', 'Drivers'), drivers,
+    subhead('camera', 'Photo album', String(profile.photos.length)), album,
   ));
-  const right = h('div', { class: 'pane hi-right' }, h('div', { class: 'title' }, 'Race history', h('span', { text: `${profile.history.length} sessions` })), h('div', { class: 'scroll t-body' }, table));
+  const right = h('div', { class: 'pane hi-right' }, paneTitle('clock', 'Race history', h('span', { text: `${profile.history.length} sessions` })), h('div', { class: 'scroll t-body' }, table));
 
   app.garage.autoRotate = true;
   app.garage.setFocus(null);

@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules', 'coverage', 'reports', 'test-results', '.stryker-tmp'] },
+  { ignores: ['dist', 'node_modules', 'coverage', 'reports', 'test-results', '.stryker-tmp', 'server-dist', 'server-data'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

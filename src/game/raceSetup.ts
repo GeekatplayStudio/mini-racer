@@ -6,6 +6,7 @@ import { PitMode, Race, Weather } from '../sim/race';
 import { Rng } from '../sim/rng';
 import { Track, TrackDef } from '../sim/track';
 import { CarBuild, bodyOf, deriveCar, generateBuild } from './build';
+import type { DriverLook } from './profile';
 import { PreparedTrack, prepareTrack } from './trackCache';
 
 /** One car on the grid with everything the presentation needs to draw it. */
@@ -17,6 +18,8 @@ export interface Entry {
   isPlayer: boolean;
   /** Seconds saved per pit stop by the car's jacks and wheel nuts. */
   pitSaving: number;
+  /** The driver's face for the radio; drivers without one get a generated face. */
+  look?: DriverLook;
 }
 
 export interface RaceSession {

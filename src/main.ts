@@ -43,9 +43,12 @@ import { mountDrivers } from './ui/driverScreen';
 import { mountGarage } from './ui/garageScreen';
 import { mountHistory } from './ui/historyScreen';
 import { mountHome } from './ui/homeScreen';
+import { OnlineRace, mountOnline, noteProfileChanged } from './ui/onlineScreen';
 import { Hud } from './ui/hud';
 import { defaultLook } from './ui/portrait';
 import { COMMANDS } from './ui/radio';
+import { openTeamTools } from './ui/teamTools';
+import { createStatus, iconButton, setIcon, tabButton } from './ui/topbar';
 import { mountTune } from './ui/tuneScreen';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -77,7 +80,6 @@ function fixtureProfile(): Profile {
 const fixture = params.get('fixture');
 const store: ProfileStore = fixture ? new MemoryStore() : new LocalStore();
 const profile: Profile = fixture === 'built' ? fixtureProfile() : (store.load() ?? newProfile());
-if (params.get('admin') === '1') profile.admin = true;
 for (const key of ['track', 'distance', 'wear', 'pit', 'traffic', 'hazards', 'weather'] as const) {
   // Test hooks: preset the race rules from the address bar.
   const v = params.get(key);
@@ -105,23 +107,17 @@ let screen: Screen | null = null;
 const moneyLabel = h('span', { class: 'money' });
 const tabs = new Map<ScreenId, HTMLElement>();
 const tab = (id: ScreenId, label: string): HTMLElement => {
-  const node = h('button', { class: 'tab', text: label, onclick: () => app.go(id) });
+  const node = tabButton(id, label, () => app.go(id));
   tabs.set(id, node);
   return node;
 };
-const adminBtn = h('button', {
-  class: 'tab admin', text: 'Test mode', title: 'Free parts and unlocked settings, for testing',
-  onclick: () => {
-    profile.admin = !profile.admin;
-    app.commit();
-    app.toast(profile.admin ? 'Test mode on: everything is free and unlocked' : 'Test mode off');
-    app.go(screenId);
-  },
-});
+// Test mode sits behind the team login; the button only shows a key.
+const toolsBtn = iconButton('key', 'Team tools', () => openTeamTools(app, () => app.go(screenId)), 'tools');
 const sound = new Sound();
-const soundBtn = h('button', { class: 'tab sound', title: 'Sound on or off (M)', onclick: () => toggleSound() });
+const soundBtn = iconButton('sound', 'Sound on or off (M)', () => toggleSound(), 'sound');
 function showSound(): void {
-  soundBtn.textContent = sound.muted ? 'Sound off' : 'Sound on';
+  setIcon(soundBtn, sound.muted ? 'mute' : 'sound');
+  soundBtn.setAttribute('aria-label', sound.muted ? 'Sound off' : 'Sound on');
   soundBtn.classList.toggle('on', !sound.muted);
 }
 function toggleSound(): void {
@@ -132,16 +128,18 @@ function toggleSound(): void {
   else app.toast(muted ? 'Sound off' : 'Sound on');
 }
 showSound();
+const status = createStatus({ profile, ref, go: (id) => app.go(id) });
 const topbar = h('div', { class: 'topbar' },
   h('span', { class: 'brand', title: 'MiniRacer by Geekatplay Studio, Vladimir Chopine' },
     h('span', { class: 'logo', text: 'MiniRacer' }),
     h('span', { class: 'by', text: 'Geekatplay Studio' }),
   ),
-  tab('home', 'Race'), tab('garage', 'Garage'), tab('tune', 'Tune'), tab('drivers', 'Drivers'), tab('history', 'History'),
+  tab('home', 'Race'), tab('garage', 'Garage'), tab('tune', 'Tune'), tab('drivers', 'Drivers'), tab('history', 'History'), tab('online', 'Online'),
   h('span', { class: 'spacer' }),
-  soundBtn,
-  adminBtn,
+  status.root,
   moneyLabel,
+  soundBtn,
+  toolsBtn,
 );
 const screenHost = h('div');
 const toastHost = h('div');
@@ -164,6 +162,8 @@ let view: RaceView | null = null;
 let hud: Hud | null = null;
 let quickSeed = numberParam('seed', 2026);
 let quickMode = false;
+/** A race the game server runs; this page only shows it. */
+let online: OnlineRace | null = null;
 let timeScale = 1;
 let paused = false;
 let accumulator = 0;
@@ -202,8 +202,12 @@ const app: App = {
   garage,
   commit(): void {
     store.save(profile);
+    noteProfileChanged(profile);
     moneyLabel.textContent = profile.admin ? 'Test mode: free' : money(profile.money);
-    adminBtn.classList.toggle('on', profile.admin);
+    moneyLabel.classList.toggle('test', profile.admin);
+    toolsBtn.classList.toggle('on', profile.admin);
+    toolsBtn.title = profile.admin ? 'Team tools: test mode is on' : 'Team tools';
+    status.refresh();
   },
   go(id: ScreenId): void {
     screen?.dispose?.();
@@ -214,6 +218,7 @@ const app: App = {
       : id === 'tune' ? mountTune(app)
       : id === 'drivers' ? mountDrivers(app)
       : id === 'history' ? mountHistory(app)
+      : id === 'online' ? mountOnline(app)
       : mountHome(app, GRID_SIZE);
     screenHost.replaceChildren(screen.root);
     expose();
@@ -239,13 +244,20 @@ const app: App = {
     ));
     modalHost.classList.remove('hidden');
   },
-  dialog(title: string, content: Node[]): void {
+  dialog(title: string, content: Node[], closeButton = true): void {
     modalYes = null;
     modalHost.replaceChildren(h('div', { class: 'pane modal wide' },
       h('div', { class: 'title' }, title),
-      h('div', { class: 'modal-body' }, ...content, h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Close', onclick: closeModal }))),
+      h('div', { class: 'modal-body' }, ...content, closeButton ? h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Close', onclick: closeModal })) : null),
     ));
     modalHost.classList.remove('hidden');
+  },
+  closeDialog(): void {
+    closeModal();
+  },
+  enterOnline(race: OnlineRace): void {
+    closeModal();
+    enterRace(race.session, false, race);
   },
   startRace(practice: boolean): void {
     const car = profile.cars.find((c) => c.id === profile.selectedCar);
@@ -274,12 +286,14 @@ const app: App = {
     raceFee = practice ? 0 : payEntry(profile, track).paid;
     app.commit();
     raceDriverId = driver.def.id;
+    made.entries[made.playerCar].look = driver.look;
     enterRace(made, false);
   },
 };
 
-function enterRace(made: RaceSession, quick: boolean): void {
+function enterRace(made: RaceSession, quick: boolean, net: OnlineRace | null = null): void {
   leaveRaceViews();
+  online = net;
   session = made;
   quickMode = quick;
   settled = null;
@@ -295,13 +309,17 @@ function enterRace(made: RaceSession, quick: boolean): void {
     view.cycleCamera();
     view.cycleCamera();
   }
-  const hints: [string, string][] = [['Tab', 'Car'], ['C', 'Camera'], ['1 2 3', 'Speed'], ['P', 'Pause'], ['M', 'Sound'], quick ? ['R', 'New race'] : ['Esc', 'Leave']];
+  const hints: [string, string][] = net
+    // Everyone shares one race clock online: no pausing, no time warp.
+    ? [['Tab', 'Car'], ['C', 'Camera'], ['M', 'Sound'], ['Esc', 'Leave']]
+    : [['Tab', 'Car'], ['C', 'Camera'], ['1 2 3', 'Speed'], ['P', 'Pause'], ['M', 'Sound'], quick ? ['R', 'New race'] : ['Esc', 'Leave']];
   const race = made.race;
-  hud = new Hud(hudRoot, made, hints, quick ? undefined : resultFooter, quick ? undefined : (command: Command) => race.command(made.playerCar, command));
+  if (net) hud = new Hud(hudRoot, made, hints, () => net.footer(backToGarage), (command: Command) => net.command(command));
+  else hud = new Hud(hudRoot, made, hints, quick ? undefined : resultFooter, quick ? undefined : (command: Command) => race.command(made.playerCar, command));
   uiRoot.style.display = 'none';
   hudRoot.style.display = '';
   layout();
-  const skip = numberParam('skip', 0);
+  const skip = net ? 0 : numberParam('skip', 0);
   for (let i = 0; i < skip / SIM_DT && race.phase !== 'finished'; i++) race.step();
   race.events.length = 0;
   expose();
@@ -321,7 +339,10 @@ function backToGarage(): void {
   hudRoot.style.display = 'none';
   layout();
   app.commit();
-  app.go('home');
+  const wasOnline = online;
+  online = null;
+  wasOnline?.leave();
+  app.go(wasOnline ? 'online' : 'home');
 }
 
 /** Writes the session into the history, banks the prize and keeps the finish photo. Runs once. */
@@ -410,7 +431,9 @@ function frame(now: number): void {
 
   if (session && view && hud) {
     const race = session.race;
-    if (!paused) {
+    if (online) {
+      online.advance(dt);
+    } else if (!paused) {
       accumulator += dt * timeScale;
       let steps = 0;
       while (accumulator >= SIM_DT && steps < 240) {
@@ -499,19 +522,19 @@ window.addEventListener('keydown', (e) => {
     case 'p':
     case 'P':
     case ' ':
-      paused = !paused;
+      if (!online) paused = !paused;
       break;
     case '1':
-      timeScale = 1;
+      if (!online) timeScale = 1;
       break;
     case '2':
-      timeScale = 2;
+      if (!online) timeScale = 2;
       break;
     case '3':
-      timeScale = 4;
+      if (!online) timeScale = 4;
       break;
     case '4':
-      timeScale = 8;
+      if (!online) timeScale = 8;
       break;
     case 'r':
     case 'R':
@@ -523,6 +546,12 @@ window.addEventListener('keydown', (e) => {
     case 'Escape': {
       if (quickMode) break;
       const over = session.race.phase === 'finished';
+      if (online) {
+        // The car races on under its driver; the team gives up the result.
+        if (over) backToGarage();
+        else app.confirm('Leave the race? Your car keeps racing without its pit wall, and you get no prize.', 'Leave', backToGarage, true);
+        break;
+      }
       if (over || !session.counts) {
         settle(!over);
         backToGarage();
@@ -556,6 +585,6 @@ if (params.get('quick') === '1') {
 } else {
   layout();
   const start = params.get('screen');
-  app.go(start === 'garage' || start === 'drivers' || start === 'tune' || start === 'history' ? start : 'home');
+  app.go(start === 'garage' || start === 'drivers' || start === 'tune' || start === 'history' || start === 'online' ? start : 'home');
 }
 requestAnimationFrame(frame);

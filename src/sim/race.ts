@@ -31,6 +31,31 @@ export interface RaceOptions {
 
 export type Weather = 'clear' | 'rain' | 'snow';
 
+/** Standing water in the rain, slush in the snow: a patch of track with less grip. Plain data. */
+export interface Puddle {
+  id: number;
+  kind: 'water' | 'slush';
+  s: number;
+  d: number;
+  x: number;
+  y: number;
+  /** Size now, m; it swells and shrinks slowly through the race. */
+  radius: number;
+  /** Size it varies around, m. */
+  base: number;
+  /** Where in its cycle the patch started, rad. */
+  phase: number;
+}
+
+/** What each kind of weather does to the track. */
+const WEATHER_GRIP: Record<Weather, { loss: number; swing: number; kerb: number; verge: number; offLine: number; patch: number; drag: number; lift: number }> = {
+  clear: { loss: 0, swing: 0, kerb: 1, verge: 1, offLine: 0, patch: 1, drag: 0, lift: 1 },
+  // Showers: a wet track, slippery paint and standing water.
+  rain: { loss: 0.08, swing: 0.04, kerb: 0.95, verge: 0.9, offLine: 0, patch: 0.8, drag: 0.03, lift: 0.975 },
+  // Light snow: cold tarmac, a thin white layer off the racing line and slush.
+  snow: { loss: 0.12, swing: 0.05, kerb: 0.94, verge: 0.88, offLine: 0.1, patch: 0.8, drag: 0.05, lift: 0.975 },
+};
+
 export type HazardKind = 'oil' | 'wreck' | 'animal' | 'tyre' | 'debris';
 
 /** Something on the track that should not be there. */
@@ -164,6 +189,11 @@ export class Race {
   readonly wearScale: number;
   readonly maxHazards: number;
   readonly weather: Weather;
+  /** Puddles in the rain, slush in the snow; empty on a dry day. */
+  puddles: Puddle[] = [];
+  /** How wet the track is (or how much snow lies on it), 0..1; 0 on a dry day. */
+  wetness = 0;
+  private puddleViews: CarView[] = [];
   /** Hazards on the track now. */
   hazards: Hazard[] = [];
   private seen: CarView[] = [];
@@ -225,7 +255,7 @@ export class Race {
         spec: e.spec,
         state,
         loc,
-        brain: new DriverBrain(track, this.line, e.spec, e.driver, state.fuel, rng.fork(i + 1)),
+        brain: new DriverBrain(track, this.line, e.spec, e.driver, state.fuel, rng.fork(i + 1), this.driverGrip()),
         controls: { steer: 0, throttle: 0, brake: 1, reverse: false },
         surface: Surface.Asphalt,
         crossings: 0,
@@ -258,6 +288,65 @@ export class Race {
     this.lapsCounted = this.cars.map(() => 0);
     this.directives = this.cars.map(() => ({}));
     this.seen = [...this.cars];
+    if (this.weather !== 'clear') {
+      this.wetness = 0.6;
+      this.placePuddles(rng.fork(7007));
+      this.seen = [...this.cars, ...this.puddleViews];
+    }
+  }
+
+  /** Grip drivers plan for: the worst of the day's weather, and a little in hand. */
+  private driverGrip(): number {
+    const w = WEATHER_GRIP[this.weather];
+    return (1 - w.loss - w.swing) * w.lift;
+  }
+
+  /** Standing water or slush at seeded places round the lap, clear of the pits and the grid. */
+  private placePuddles(rng: Rng): void {
+    const track = this.track;
+    const slush = this.weather === 'snow';
+    const from = track.pit.sOut + 80, to = track.pit.sIn - 80;
+    if (to - from < 200) return;
+    const wanted = clamp(Math.round((to - from) / (slush ? 420 : 300)), 3, slush ? 7 : 10);
+    for (let tries = 0; this.puddles.length < wanted && tries < wanted * 12; tries++) {
+      const s = rng.range(from, to);
+      const base = rng.range(1.7, slush ? 2.6 : 3.1);
+      // Water gathers toward the edges more often than on the crown of the road.
+      const d = (rng.next() < 0.5 ? -1 : 1) * Math.sqrt(rng.next()) * (track.halfWidth - base * 0.5);
+      const phase = rng.range(0, Math.PI * 2);
+      if (this.puddles.some((p) => Math.abs(p.s - s) < 70)) continue;
+      const [x, y] = track.pointAt(s, d);
+      this.puddles.push({ id: this.puddles.length + 1, kind: slush ? 'slush' : 'water', s, d, x, y, radius: base, base, phase });
+      this.puddleViews.push({
+        spec: { length: base * 2, width: Math.max(0.5, base * 2 - 1.2) } as CarSpec,
+        state: { x, y, vx: 0, vy: 0, heading: 0 } as CarState,
+        loc: { index: track.indexAt(s), s, d },
+        obstacle: true,
+        soft: true,
+        puddle: true,
+      });
+    }
+  }
+
+  /** Showers come and go: the track gets wetter and dries a little, and the puddles follow. */
+  private updateWeather(): void {
+    const t = this.clock;
+    this.wetness = 0.6 + 0.4 * Math.sin(t * 0.021 + (this.seed % 7));
+    for (let i = 0; i < this.puddles.length && i < this.puddleViews.length; i++) {
+      const p = this.puddles[i];
+      p.radius = p.base * (0.86 + 0.14 * this.wetness + 0.12 * Math.sin(t * 0.05 + p.phase));
+      const size = p.radius * 2;
+      // The drivers' picture follows the puddle list, which a snapshot may have replaced.
+      const view = this.puddleViews[i];
+      view.state.x = p.x;
+      view.state.y = p.y;
+      view.loc.s = p.s;
+      view.loc.d = p.d;
+      const spec = view.spec as { length: number; width: number };
+      spec.length = size;
+      // A wheel through the edge of it costs nothing.
+      spec.width = Math.max(0.5, size - 1.2);
+    }
   }
 
   /** Completed laps for a car. */
@@ -329,6 +418,10 @@ export class Race {
     }
 
     if (this.maxHazards > 0 && this.phase === 'racing') this.updateHazards(dt);
+    const weather = WEATHER_GRIP[this.weather];
+    const wet = this.weather !== 'clear';
+    // Once a second is plenty for something that changes over minutes.
+    if (wet && this.steps % 240 === 0) this.updateWeather();
 
     for (const car of this.cars) {
       if (car.parked) continue;
@@ -364,6 +457,23 @@ export class Race {
       env.gripFront = front.grip * blown * dirty;
       env.gripRear = rear.grip * blown * dirty;
       env.drag = (front.drag + rear.drag) / 2 + (blown < 1 ? 0.08 : 0);
+      if (wet) {
+        const road = 1 - weather.loss - weather.swing * this.wetness;
+        let all = 1;
+        for (const p of this.puddles) {
+          if ((st.x - p.x) ** 2 + (st.y - p.y) ** 2 < (p.radius + 0.6) ** 2) {
+            all = weather.patch;
+            env.drag += weather.drag;
+            break;
+          }
+        }
+        // Snow settles where the cars do not run.
+        const off = weather.offLine * this.wetness * clamp((Math.abs(car.loc.d - this.line.offset[i]) - 1.6) / 2.5, 0, 1);
+        const onRoad = car.surface === Surface.Asphalt ? 1 : car.surface === Surface.Kerb ? weather.kerb : 0;
+        all *= onRoad > 0 ? road * onRoad * (1 - off) : weather.verge;
+        env.gripFront *= all;
+        env.gripRear *= all;
+      }
 
       const wearBefore = st.tyreWear;
       const fuelBefore = st.fuel;
@@ -483,7 +593,7 @@ export class Race {
         this.hazardTimer = 1.5;
       }
     }
-    if (changed) this.seen = [...this.cars, ...this.hazards.map((h) => h.view)];
+    if (changed) this.seen = [...this.cars, ...this.hazards.map((h) => h.view), ...this.puddleViews];
   }
 
   /** Cars that reach a solid hazard hit it: small things are knocked away, a wreck stays put. */
@@ -526,7 +636,7 @@ export class Race {
           this.events.push({ type: 'hazard', kind: h.kind, stage: 'hit', car: car.id });
           if (h.kind !== 'wreck') {
             this.hazards.splice(i, 1);
-            this.seen = [...this.cars, ...this.hazards.map((x) => x.view)];
+            this.seen = [...this.cars, ...this.hazards.map((x) => x.view), ...this.puddleViews];
             break;
           }
         }

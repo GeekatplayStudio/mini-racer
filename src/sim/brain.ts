@@ -29,6 +29,8 @@ export interface CarView {
   obstacle?: boolean;
   /** An obstacle that can be driven through at a cost, such as oil. */
   soft?: boolean;
+  /** Standing water or slush: missed when that costs little, otherwise driven through with a small lift. */
+  puddle?: boolean;
 }
 
 /**
@@ -70,13 +72,15 @@ export class DriverBrain {
     def: DriverDef,
     fuel: number,
     rng: Rng,
+    /** Grip the driver expects from the day's weather, as a fraction of a dry track. */
+    grip = 1,
   ) {
     this.profile = deriveProfile(def);
     this.rng = rng;
     this.speed = computeSpeedProfile(track, line, spec, {
       mass: spec.mass + this.profile.mass + fuel,
-      cornerGrip: this.profile.cornerGrip,
-      brakeGrip: this.profile.brakeGrip,
+      cornerGrip: this.profile.cornerGrip * grip,
+      brakeGrip: this.profile.brakeGrip * grip,
     });
   }
 
@@ -182,7 +186,7 @@ export class DriverBrain {
       if (gap < 0 && gap > -14 && !other.obstacle) pressure = Math.max(pressure, 1 + gap / 14);
 
       // Alongside: leave them room, and do not blend back across them.
-      if (Math.abs(gap) < clearLen + 2 && !inLane && !(recovering && halted)) {
+      if (Math.abs(gap) < clearLen + 2 && !inLane && !(recovering && halted) && !other.puddle) {
         const need = clearWid + 0.45 + 0.35 * (1 - p.aggression);
         if (lateral > 0) bandMax = Math.min(bandMax, other.loc.d - need);
         else bandMin = Math.max(bandMin, other.loc.d + need);
@@ -194,8 +198,10 @@ export class DriverBrain {
       }
 
       if (gap > 0 && gap < lookDist * (other.obstacle ? 2.4 : 1)) {
-        const inPath = Math.abs(other.loc.d - myTargetD) < clearWid + 0.35;
-        const inFront = Math.abs(lateral) < clearWid + 0.2;
+        // Water is judged against where the line will be when the car gets there.
+        const aim = other.puddle ? this.line.offset[other.loc.index] + this.passOffset : myTargetD;
+        const inPath = Math.abs(other.loc.d - aim) < clearWid + 0.35;
+        const inFront = !other.puddle && Math.abs(lateral) < clearWid + 0.2;
         if ((inPath || inFront) && gap < blockerGap) {
           blockerGap = gap;
           blocker = other;
@@ -224,13 +230,16 @@ export class DriverBrain {
           (closing > passThreshold || myPace > vo + passThreshold + 1) &&
           (!this.inBrakeZone || p.aggression > 0.62));
         let passD: number | null = null;
+        const lineThere = blocker.puddle ? this.line.offset[blocker.loc.index] : lineHere;
         if (wantsPass) {
           const shift = clearWid + p.passMargin;
           const limit = hw - me.spec.width / 2 - 0.25;
           const candA = blocker.loc.d - shift;
           const candB = blocker.loc.d + shift;
-          const okA = Math.abs(candA) <= limit && this.laneFree(me, others, blocker, candA);
-          const okB = Math.abs(candB) <= limit && this.laneFree(me, others, blocker, candB);
+          // Nobody goes far off the line for a puddle.
+          const detour = blocker.puddle ? 2 : Infinity;
+          const okA = Math.abs(candA) <= limit && Math.abs(candA - lineThere) <= detour && this.laneFree(me, others, blocker, candA);
+          const okB = Math.abs(candB) <= limit && Math.abs(candB - lineThere) <= detour && this.laneFree(me, others, blocker, candB);
           if (okA && okB) {
             // Prefer the inside of the next corner, otherwise the smaller move.
             const kAhead = track.curvature[(idx + Math.round(40 / track.ds)) % n];
@@ -243,7 +252,15 @@ export class DriverBrain {
             passD = clamp(Math.abs(candA) < Math.abs(candB) ? candA : candB, -limit, limit);
           }
         }
-        if (passD !== null) {
+        if (blocker.puddle) {
+          if (passD !== null) {
+            desiredPass = passD - lineThere;
+            holdOffset = false;
+          } else {
+            // No easy way round the water: a small lift, and through it.
+            speedCap = Math.min(speedCap, Math.max(16, myPace * 0.92));
+          }
+        } else if (passD !== null) {
           desiredPass = passD - lineHere;
           holdOffset = false;
           // Until clear laterally, do not drive into the back of them.

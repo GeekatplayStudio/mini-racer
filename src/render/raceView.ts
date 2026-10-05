@@ -8,6 +8,7 @@ import { CarVisual, buildCarVisual } from './carMesh';
 import { Puffs, SkidMarks } from './effects';
 import { PixelPipeline } from './pixelPipeline';
 import { TrackScene, buildTrackScene } from './trackScene';
+import { WEATHER_LOOKS, WeatherFx, WeatherLook } from './weather';
 
 export type CameraMode = 'chase' | 'pov' | 'overview';
 
@@ -20,6 +21,7 @@ interface CarFx {
   marking: boolean[];
   emit: number;
   smoke: number;
+  spray: number;
 }
 
 /** Draws a race session: owns the 3D scene, camera and pixel pipeline. */
@@ -42,14 +44,20 @@ export class RaceView {
   private snapped = false;
   private readonly hazardMeshes = new Map<number, THREE.Object3D>();
   private hazardSmoke = 0;
+  private readonly look: WeatherLook;
+  private readonly weather: WeatherFx;
+  /** Ground the camera can see: middle, span and how high the weather starts. */
+  private readonly view = { centre: new THREE.Vector3(), size: 80, height: 60 };
 
   constructor(private readonly renderer: THREE.WebGLRenderer, private readonly session: RaceSession) {
     this.focusCar = session.playerCar;
     this.pipeline = new PixelPipeline(this.renderer);
 
-    this.scene.background = new THREE.Color(0x3f8532);
-    this.scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x5a7a40, 1.25));
-    this.sun = new THREE.DirectionalLight(0xfff0d2, 2.7);
+    const look = WEATHER_LOOKS[session.race.weather];
+    this.look = look;
+    this.scene.background = new THREE.Color(look.ground);
+    this.scene.add(new THREE.HemisphereLight(look.hemiSky, look.hemiGround, look.hemiIntensity));
+    this.sun = new THREE.DirectionalLight(look.sun, look.sunIntensity);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     this.sun.shadow.bias = -0.0006;
@@ -57,8 +65,10 @@ export class RaceView {
     this.scene.add(this.sun, this.sun.target);
 
     const { track, race, entries } = session;
-    this.trackScene = buildTrackScene(track, race.line);
+    this.trackScene = buildTrackScene(track, race.line, race.weather);
     this.scene.add(this.trackScene.group);
+    this.weather = new WeatherFx(race.weather, track, race.puddles);
+    this.scene.add(this.weather.group);
     this.scene.add(this.skids.mesh, this.puffs.mesh);
     this.puffs.mesh.castShadow = false;
 
@@ -67,7 +77,7 @@ export class RaceView {
       this.scene.add(visual.root);
       return visual;
     });
-    this.fx = entries.map(() => ({ wheelX: [0, 0, 0, 0], wheelZ: [0, 0, 0, 0], marking: [false, false, false, false], emit: 0, smoke: 0 }));
+    this.fx = entries.map(() => ({ wheelX: [0, 0, 0, 0], wheelZ: [0, 0, 0, 0], marking: [false, false, false, false], emit: 0, smoke: 0, spray: 0 }));
 
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (let i = 0; i < track.n; i++) {
@@ -101,6 +111,7 @@ export class RaceView {
       const mesh = o as THREE.Mesh;
       mesh.geometry?.dispose();
     });
+    this.weather.dispose();
     this.pipeline.dispose();
   }
 
@@ -121,6 +132,8 @@ export class RaceView {
     });
 
     this.updateCamera(dt);
+    this.weather.updatePuddles(race.puddles);
+    this.weather.update(dt, this.view.centre, this.view.size, this.view.height);
   }
 
   render(): void {
@@ -164,6 +177,7 @@ export class RaceView {
     visual.chassis.rotation.x = clamp(-st.ay * 0.0032, -0.06, 0.06);
     visual.chassis.rotation.z = clamp(st.ax * 0.0022, -0.035, 0.035);
     for (const wheel of visual.frontWheels) wheel.rotation.y = -st.steerAngle;
+    for (const rim of visual.rims) rim.rotation.z -= (st.vx / car.spec.wheelRadius) * dt;
     visual.brakeLights.color.setHex(st.brake > 0.05 ? 0xff3028 : 0x5a0c10);
     car.dents.forEach((level, zone) => {
       visual.dents[zone][0].visible = level >= 0.35;
@@ -220,6 +234,29 @@ export class RaceView {
         this.puffs.emit(nx + (Math.random() - 0.5) * 0.5, 0.9, nz + (Math.random() - 0.5) * 0.5, (Math.random() - 0.5), 1.6 + Math.random(), (Math.random() - 0.5), 0.5 + st.damage * 0.8, 0.9, st.damage > 0.8 ? 0x2c2c32 : 0x9a9aa2);
       }
     }
+    // Spray thrown up by the tyres on a wet or snowy track, more through standing water.
+    const race = this.session.race;
+    if (race.weather !== 'clear' && onRoad && speed > 10) {
+      let splash = 1;
+      for (const p of race.puddles) {
+        if ((st.x - p.x) ** 2 + (st.y - p.y) ** 2 < (p.radius + 0.6) ** 2) splash = 3;
+      }
+      const snow = race.weather === 'snow';
+      fx.spray += speed * (0.25 + 0.5 * race.wetness) * (snow ? 0.7 : 1) * splash * dt;
+      const vwx = st.vx * cosH - st.vy * sinH, vwz = st.vx * sinH + st.vy * cosH;
+      while (fx.spray >= 1) {
+        fx.spray -= 1;
+        const w = 2 + Math.floor(Math.random() * 2);
+        const wheel = visual.wheels[w].position;
+        const wx = st.x + (wheel.x - 0.4) * cosH - wheel.z * sinH;
+        const wz = st.y + (wheel.x - 0.4) * sinH + wheel.z * cosH;
+        this.puffs.emit(
+          wx + (Math.random() - 0.5) * 0.6, 0.2, wz + (Math.random() - 0.5) * 0.6,
+          vwx * 0.35 + (Math.random() - 0.5) * 3, 0.6 + Math.random() * 1.2 * splash, vwz * 0.35 + (Math.random() - 0.5) * 3,
+          (0.22 + Math.random() * 0.26) * (splash > 1 ? 1.6 : 1), 0.3 + Math.random() * 0.25, snow ? 0xf4f7fc : 0xd8e2ee,
+        );
+      }
+    }
     fx.emit += rate * dt;
     while (fx.emit >= 1) {
       fx.emit -= 1;
@@ -243,7 +280,11 @@ export class RaceView {
     let height: number;
 
     const sky = this.cameraMode === 'pov';
-    (this.scene.background as THREE.Color).setHex(sky ? 0x9fd0f4 : 0x3f8532);
+    (this.scene.background as THREE.Color).setHex(sky ? this.look.sky : this.look.ground);
+    // Haze in the distance from the cockpit only; from above it would grey the whole picture.
+    const fog = sky && this.look.fogFar > 0;
+    if (fog && !this.scene.fog) this.scene.fog = new THREE.Fog(this.look.sky, this.look.fogNear, this.look.fogFar);
+    else if (!fog && this.scene.fog) this.scene.fog = null;
     if (sky) {
       // Driver's eye: seated left of centre, looking down the road and a little into the corner.
       const st = this.session.race.cars[this.focusCar].state;
@@ -260,6 +301,9 @@ export class RaceView {
       cam.lookAt(ex + Math.cos(look) * 30, 0.9, ez + Math.sin(look) * 30);
       this.focus.set(st.x, 0, st.y);
       this.snapped = false;
+      this.view.centre.set(ex + Math.cos(look) * 26, 0, ez + Math.sin(look) * 26);
+      this.view.size = 64;
+      this.view.height = 16;
       this.aimShadows(110);
       return;
     }
@@ -304,6 +348,9 @@ export class RaceView {
     cam.position.set(this.focus.x, this.camHeight, this.focus.z + this.camHeight * tilt);
     cam.lookAt(this.focus);
 
+    this.view.centre.copy(this.focus);
+    this.view.size = this.cameraMode === 'overview' ? Math.max(this.bounds.w, this.bounds.h) : this.camHeight * 1.15;
+    this.view.height = this.camHeight * 0.8;
     this.aimShadows(shadowHalf);
   }
 

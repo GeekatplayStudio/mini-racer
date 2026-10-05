@@ -7,6 +7,10 @@ reports/
 .stryker-tmp/
 *.log
 
+# Game server: build output, and accounts and saved teams (never commit these)
+server-dist/
+server-data/
+
 # Editor settings
 .vscode/
 .idea/

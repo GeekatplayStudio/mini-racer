@@ -52,6 +52,19 @@ export function grassTexture(): THREE.CanvasTexture {
   return finish(canvas);
 }
 
+/** Grass under a thin layer of snow: white with green showing through. */
+export function snowGrassTexture(): THREE.CanvasTexture {
+  const [canvas, ctx] = makeCanvas(128, 128);
+  const rng = new Rng(13);
+  ctx.fillStyle = '#e6ecf4';
+  ctx.fillRect(0, 0, 128, 64);
+  ctx.fillStyle = '#dde4ee';
+  ctx.fillRect(0, 64, 128, 64);
+  speckle(ctx, rng, 128, 128, ['#f4f7fb', '#d2dae6', '#c8d2e0', '#eef2f8'], 0.3, 2);
+  speckle(ctx, rng, 128, 128, ['#7fa070', '#6a8f5e', '#8eae7c'], 0.05, 2);
+  return finish(canvas);
+}
+
 export function asphaltTexture(): THREE.CanvasTexture {
   const [canvas, ctx] = makeCanvas(128, 128);
   const rng = new Rng(23);

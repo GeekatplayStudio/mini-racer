@@ -267,3 +267,50 @@ export function drawPortrait(canvas: HTMLCanvasElement, look: DriverLook): void 
   px('#5a82b8', 35, 29, 6, 1);
   px(suit, 43, 26, 2, 10);
 }
+
+/** Head-and-shoulders crop of the portrait, 32x32, for small frames such as the race radio. */
+export function drawFace(canvas: HTMLCanvasElement, look: DriverLook): void {
+  const full = document.createElement('canvas');
+  drawPortrait(full, look);
+  canvas.width = canvas.height = 32;
+  canvas.getContext('2d')?.drawImage(full, 8, 3, 32, 32, 0, 0, 32, 32);
+}
+
+/** Row of the mouth in the 32-pixel face crop, so a talking overlay can sit on it. */
+export function faceMouthRow(look: DriverLook): number {
+  return (lookValue(look, 'sex') === 1 ? 10 : 9) + 18 - 3;
+}
+
+/**
+ * A look for a driver who has none of their own, such as an opponent. The same
+ * key always gives the same face.
+ */
+export function lookFor(key: string): DriverLook {
+  // FNV-1a over the key, then a small generator for one value per field.
+  let state = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) state = Math.imul(state ^ key.charCodeAt(i), 0x01000193);
+  const next = (): number => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const any = (k: LookKey): number => Math.floor(next() * LOOK_OPTIONS[k].length);
+  const sex = next() < 0.3 ? 1 : 0;
+  // Natural hair colours mostly; the last two are dyes.
+  const hairColor = next() < 0.9 ? Math.floor(next() * 8) : 8 + Math.floor(next() * 2);
+  return {
+    sex,
+    age: any('age'),
+    face: any('face'),
+    skin: any('skin'),
+    eyes: any('eyes'),
+    hair: sex === 1 ? 5 + Math.floor(next() * 5) : any('hair'),
+    hairColor,
+    beard: sex === 1 || next() < 0.45 ? 0 : 1 + Math.floor(next() * 5),
+    glasses: next() < 0.7 ? 0 : 1 + Math.floor(next() * 3),
+    hat: next() < 0.6 ? 0 : 1 + Math.floor(next() * 4),
+    suit: any('suit'),
+    helmet: any('helmet'),
+  };
+}

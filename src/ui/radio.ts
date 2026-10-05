@@ -40,10 +40,22 @@ function pick(lines: readonly string[], seed: number): string {
   return lines[Math.abs(Math.floor(seed)) % lines.length];
 }
 
+/** One spoken line and the car whose driver says it. */
+export interface RadioLine {
+  car: number;
+  text: string;
+}
+
+/** Splits "{b}: words" into the speaker and the words, with driver codes filled in. */
+function spoken(line: string, a: number, b: number, code: (car: number) => string): RadioLine {
+  const text = line.slice(line.indexOf(':') + 2).replace('{a}', code(a)).replace('{b}', code(b));
+  return { car: line.startsWith('{b}') ? b : a, text };
+}
+
 /** A comic line for an on-track incident, or null for events nobody comments on. */
-export function banter(ev: RaceEvent, code: (car: number) => string, seed: number): string | null {
-  if (ev.type === 'overtake') return pick(OVERTAKE, seed).replace('{a}', code(ev.car)).replace('{b}', code(ev.passed));
-  if (ev.type === 'contact' && ev.force > 3) return pick(CONTACT, seed).replace('{a}', code(ev.a)).replace('{b}', code(ev.b));
-  if (ev.type === 'wall' && ev.force > 5) return pick(WALL, seed).replace('{a}', code(ev.car));
+export function banter(ev: RaceEvent, code: (car: number) => string, seed: number): RadioLine | null {
+  if (ev.type === 'overtake') return spoken(pick(OVERTAKE, seed), ev.car, ev.passed, code);
+  if (ev.type === 'contact' && ev.force > 3) return spoken(pick(CONTACT, seed), ev.a, ev.b, code);
+  if (ev.type === 'wall' && ev.force > 5) return spoken(pick(WALL, seed), ev.car, ev.car, code);
   return null;
 }
