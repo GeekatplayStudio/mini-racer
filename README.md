@@ -45,7 +45,7 @@ You do not steer the car. You build it, part by part, in a 3D garage; you create
 - Random road hazards: oil, loose tyres, debris, animals, crashed cars.
 - Collisions leave visible damage and cost a little speed; cars recover and carry on. Pit stops repair part of it.
 - Going off the track wears the tyres much faster and leaves them dirty for a few corners.
-- Three cameras: chase, driver's eye, whole circuit.
+- Three cameras: chase, driver's eye, and a top view that fits the whole circuit on screen, however big the track.
 - Synthesised engine, tyre and impact sound, with a mute button (or press `M`).
 - Race history, career statistics and a photo album.
 
@@ -85,6 +85,8 @@ npm run dev
 Then open http://localhost:5173.
 
 Single player works with no server.
+
+To jump straight into a test race, add options to the address, for example http://localhost:5173/?quick=1&track=spa&cam=overview. `track` takes a circuit id from `src/data/tracks.ts` and `cam` takes `pov` or `overview`.
 
 ### With online play
 

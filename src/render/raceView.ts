@@ -316,18 +316,17 @@ export class RaceView {
       this.aimShadows(110);
       return;
     }
-    if (cam.fov !== 28) {
-      cam.near = 10;
-      cam.fov = 28;
-      cam.up.set(0, 1, 0);
-      cam.updateProjectionMatrix();
-    }
+    let near = 10, far = 2400;
     if (this.cameraMode === 'overview') {
       const b = this.bounds;
-      const vFov = THREE.MathUtils.degToRad(cam.fov);
+      const vFov = THREE.MathUtils.degToRad(28);
       const fitH = b.h / (2 * Math.tan(vFov / 2));
       const fitW = b.w / (2 * Math.tan(vFov / 2) * cam.aspect);
       height = Math.max(fitH, fitW) * 1.22;
+      // The big circuits put the camera several kilometres up: reach past the far edge of the ground.
+      // Near scales too, keeping depth precision for the outline pass; weather starts well below it.
+      far = Math.max(far, height * 1.5);
+      near = Math.max(near, height * 0.1);
       target = new THREE.Vector3(b.cx, 0, b.cz);
       shadowHalf = Math.max(b.w, b.h) * 0.62;
       this.focus.copy(target);
@@ -351,6 +350,13 @@ export class RaceView {
         this.focus.lerp(target, 1 - Math.exp(-dt * 3.2));
         this.camHeight += (height - this.camHeight) * (1 - Math.exp(-dt * 1.4));
       }
+    }
+    if (cam.fov !== 28 || cam.near !== near || cam.far !== far) {
+      cam.near = near;
+      cam.far = far;
+      cam.fov = 28;
+      cam.up.set(0, 1, 0);
+      cam.updateProjectionMatrix();
     }
 
     const tilt = this.cameraMode === 'overview' ? 0.32 : 0.58;
