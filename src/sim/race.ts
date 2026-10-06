@@ -145,6 +145,8 @@ export interface RaceCar {
   dents: number[];
   /** Grass and gravel on the tyres after a trip off the track, 0..1. */
   dirt: number;
+  /** Controls from a person at the wheel; null while the driver drives. See Race.drivenByHand. */
+  manual: Controls | null;
 }
 
 export type RaceEvent =
@@ -178,7 +180,7 @@ interface Pending {
 /**
  * A complete race: cars, drivers, rules and timing. It depends only on its
  * constructor inputs and the commands given to it, so the same
- * inputs always give the same race.
+ * inputs always give the same race (unless a person takes the wheel).
  */
 export class Race {
   readonly track: Track;
@@ -284,6 +286,7 @@ export class Race {
         stance: 0,
         dents: [0, 0, 0, 0],
         dirt: 0,
+        manual: null,
       };
     });
     this.order = [...this.cars];
@@ -432,7 +435,8 @@ export class Race {
       const directive = this.direct(car, dt);
       const ctl = car.brain.update(car, this.seen, sinceGreen, dt, directive);
       if (car.finished) this.coolDown(car, ctl);
-      car.controls = ctl;
+      // The driver keeps thinking while a person drives, so handing the car back is seamless.
+      car.controls = car.manual && this.drivenByHand(car) ? car.manual : ctl;
     }
 
     const env: CarEnvironment = { gripFront: 1, gripRear: 1, drag: 0 };
@@ -763,6 +767,14 @@ export class Race {
       }
     }
     return d;
+  }
+
+  /**
+   * Whether the person's controls drive the car now. The driver does the start
+   * procedure, the pit lane and the slow-down lap after the flag.
+   */
+  drivenByHand(car: RaceCar): boolean {
+    return car.manual !== null && this.phase === 'racing' && !car.finished && !car.retired && car.pitPhase === PitPhase.None;
   }
 
   /** After the flag: slow down and keep following the line. */

@@ -30,13 +30,14 @@ import {
   settleRace,
 } from './game/profile';
 import { RaceSession, createPlayerRace, createQuickRace } from './game/raceSetup';
+import type { EngineVoice } from './game/engineVoice';
+import { DriveKeys, HandDriver } from './game/handDrive';
 import { prepareTrack } from './game/trackCache';
 import { GarageView } from './render/garageView';
 import { RaceView } from './render/raceView';
 import { SKILLS, Skill } from './sim/driver';
 import { Command, SIM_DT } from './sim/race';
 import { Rng } from './sim/rng';
-import { Surface } from './sim/track';
 import type { TrackDef } from './sim/track';
 import type { App, Screen, ScreenId } from './ui/appTypes';
 import { h, money } from './ui/dom';
@@ -176,6 +177,50 @@ let raceDriverId = '';
 let raceFee = 0;
 let finishShot: string | null = null;
 let wantFinishShot = false;
+/** The player has taken the wheel of their car. */
+let driving = false;
+/** Each car's engine sound, by car id. */
+let voices: EngineVoice[] = [];
+const handDriver = new HandDriver();
+const driveKeys: DriveKeys = { left: false, right: false, up: false, down: false };
+/** Driving keys by position on the keyboard, so other layouts get the same shape. */
+const DRIVE_KEYS: Record<string, keyof DriveKeys> = {
+  KeyW: 'up',
+  ArrowUp: 'up',
+  KeyS: 'down',
+  ArrowDown: 'down',
+  KeyA: 'left',
+  ArrowLeft: 'left',
+  KeyD: 'right',
+  ArrowRight: 'right',
+};
+
+function releaseDriveKeys(): void {
+  driveKeys.left = driveKeys.right = driveKeys.up = driveKeys.down = false;
+}
+
+/** Hands the player's car to the player, or back to its driver. Offline only: online, the server drives. */
+function setDriving(on: boolean): void {
+  if (!session || !view || !hud) return;
+  if (on && online) {
+    hud.flash('Drive yourself in offline races', 'small');
+    return;
+  }
+  driving = on;
+  handDriver.reset();
+  releaseDriveKeys();
+  session.race.cars[session.playerCar].manual = on ? handDriver.controls : null;
+  hud.setWheel(on);
+  view.followHeading = on;
+  if (on) {
+    view.focusCar = session.playerCar;
+    if (view.cameraMode === 'overview') view.cut('chase', session.playerCar);
+    timeScale = 1;
+    hud.flash('You have the wheel', 'green');
+  } else {
+    hud.flash('Your driver has the wheel', 'small');
+  }
+}
 
 let title: TitleScreen | null = null;
 
@@ -225,7 +270,7 @@ function layout(): void {
 
 function expose(): void {
   // For end-to-end tests and debugging.
-  (window as unknown as { miniracer: unknown }).miniracer = { session, view, profile, garage, screen: screenId, title };
+  (window as unknown as { miniracer: unknown }).miniracer = { session, view, profile, garage, screen: screenId, title, sound };
 }
 
 const currentTrack = (): TrackDef => TRACKS.find((t) => t.id === profile.prefs.trackId) ?? TRACKS[0];
@@ -351,7 +396,13 @@ function enterRace(made: RaceSession, quick: boolean, net: OnlineRace | null = n
   timeScale = 1;
   paused = false;
   accumulator = 0;
+  driving = false;
+  handDriver.reset();
+  releaseDriveKeys();
+  voices = made.entries.map((e) => e.voice);
   view = new RaceView(renderer, made);
+  view.enableMouse();
+  garage.interactive = false;
   const cam = params.get('cam');
   if (cam === 'pov') view.cycleCamera();
   if (cam === 'overview') {
@@ -360,8 +411,8 @@ function enterRace(made: RaceSession, quick: boolean, net: OnlineRace | null = n
   }
   const hints: [string, string][] = net
     // Everyone shares one race clock online: no pausing, no time warp.
-    ? [['Tab', 'Car'], ['C', 'Camera'], ['M', 'Sound'], ['Esc', 'Leave']]
-    : [['Tab', 'Car'], ['C', 'Camera'], ['1 2 3', 'Speed'], ['P', 'Pause'], ['M', 'Sound'], quick ? ['R', 'New race'] : ['Esc', 'Leave']];
+    ? [['Tab', 'Car'], ['C', 'Camera'], ['Drag', 'Look'], ['M', 'Sound'], ['Esc', 'Leave']]
+    : [['Tab', 'Car'], ['C', 'Camera'], ['Drag', 'Look'], ['T', 'Drive'], ['1 2 3', 'Speed'], ['P', 'Pause'], ['M', 'Sound'], quick ? ['R', 'New race'] : ['Esc', 'Leave']];
   const race = made.race;
   if (net) hud = new Hud(hudRoot, made, hints, () => net.footer(backToGarage), (command: Command) => net.command(command));
   else hud = new Hud(hudRoot, made, hints, quick ? undefined : resultFooter, quick ? undefined : (command: Command) => race.command(made.playerCar, command));
@@ -375,6 +426,8 @@ function enterRace(made: RaceSession, quick: boolean, net: OnlineRace | null = n
 }
 
 function leaveRaceViews(): void {
+  driving = false;
+  garage.interactive = true;
   view?.dispose();
   hud?.dispose();
   view = null;
@@ -480,7 +533,7 @@ function frame(now: number): void {
 
   if (title) {
     // The demo race is watched in silence until the visitor makes a choice.
-    sound.follow(null, null);
+    sound.silence();
     title.frame(dt);
     requestAnimationFrame(frame);
     return;
@@ -491,6 +544,10 @@ function frame(now: number): void {
     if (online) {
       online.advance(dt);
     } else if (!paused) {
+      if (driving) {
+        const me = race.cars[session.playerCar];
+        handDriver.update(driveKeys, me.spec, me.state, dt * timeScale);
+      }
       accumulator += dt * timeScale;
       let steps = 0;
       while (accumulator >= SIM_DT && steps < 240) {
@@ -507,9 +564,8 @@ function frame(now: number): void {
       hud.handleEvents(race.events, view.focusCar);
       race.events.length = 0;
     }
-    const heard = race.cars[view.focusCar];
-    if (paused || heard.parked) sound.follow(null, null);
-    else sound.follow(heard.spec, heard.state, heard.surface === Surface.Asphalt || heard.surface === Surface.Kerb);
+    if (paused) sound.silence();
+    else sound.hear(race.cars, voices, view.focusCar, view.ear());
     view.update(paused ? 0 : dt * timeScale);
     if (wantFinishShot && !quickMode) {
       wantFinishShot = false;
@@ -526,7 +582,7 @@ function frame(now: number): void {
     view.render();
     hud.update(dt, view.focusCar, timeScale, paused);
   } else {
-    sound.follow(null, null);
+    sound.silence();
     garage.update(dt);
     garage.render();
     if (toastTimer > 0) {
@@ -562,6 +618,13 @@ window.addEventListener('keydown', (e) => {
     e.target.blur();
     if (e.key === ' ' || e.key === 'Enter') e.preventDefault();
   }
+  // At the wheel, W A S D drive the car instead of giving orders.
+  const drive = DRIVE_KEYS[e.code];
+  if (drive && driving && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    driveKeys[drive] = true;
+    return;
+  }
   const count = session.race.cars.length;
   const order = COMMANDS.find((c) => c.key.toLowerCase() === e.key.toLowerCase());
   if (order && !quickMode && !e.ctrlKey && !e.metaKey) {
@@ -582,6 +645,19 @@ window.addEventListener('keydown', (e) => {
     case 'c':
     case 'C':
       view.cycleCamera();
+      break;
+    case 't':
+    case 'T':
+      setDriving(!driving);
+      break;
+    case 'f':
+    case 'F':
+      view.followHeading = !view.followHeading;
+      hud?.flash(view.followHeading ? 'Camera behind the car' : 'Camera fixed', 'small');
+      break;
+    case 'v':
+    case 'V':
+      view.resetCamera();
       break;
     case 'p':
     case 'P':
@@ -637,6 +713,12 @@ window.addEventListener('keydown', (e) => {
     }
   }
 });
+window.addEventListener('keyup', (e) => {
+  const drive = DRIVE_KEYS[e.code];
+  if (drive) driveKeys[drive] = false;
+});
+// A key let go in another window would otherwise stay held down.
+window.addEventListener('blur', releaseDriveKeys);
 modalHost.addEventListener('click', (e) => {
   if (e.target === modalHost) {
     closeModal();

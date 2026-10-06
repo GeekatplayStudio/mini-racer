@@ -1,7 +1,28 @@
-import type { CarSpec, CarState } from '../sim/car';
-import type { RaceEvent } from '../sim/race';
+import type { EngineVoice } from '../game/engineVoice';
+import type { CarState } from '../sim/car';
+import { clamp } from '../sim/math';
+import type { RaceCar, RaceEvent } from '../sim/race';
+import { Surface } from '../sim/track';
+import { EngineSynth, Placement } from './engineSynth';
 
 const STORE_KEY = 'miniracer.muted';
+/** Engines heard at once: the watched car and the nearest others. */
+const VOICES = 6;
+/** Beyond this distance, m, another car is not heard. */
+const EARSHOT = 300;
+const SPEED_OF_SOUND = 343;
+/** Pass-bys are bent a little more than nature would, so they come through the other engines. */
+const DOPPLER_BOOST = 1.5;
+
+/** Where the sound is heard from, in race coordinates: position, velocity and the direction that is right on screen. */
+export interface Ear {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  rightX: number;
+  rightY: number;
+}
 
 function readMuted(): boolean {
   try {
@@ -11,24 +32,44 @@ function readMuted(): boolean {
   }
 }
 
+/** Level, side, pitch bend and dullness of a car heard from the ear; written into `out`. */
+export function placeCar(st: CarState, ear: Ear, out: Placement): Placement {
+  const dx = st.x - ear.x, dy = st.y - ear.y;
+  const d = Math.hypot(dx, dy);
+  const ux = d > 0.5 ? dx / d : 0, uy = d > 0.5 ? dy / d : 0;
+  const cosH = Math.cos(st.heading), sinH = Math.sin(st.heading);
+  // Speed along the line between them: positive when the car is pulling away.
+  const away = (st.vx * cosH - st.vy * sinH - ear.vx) * ux + (st.vx * sinH + st.vy * cosH - ear.vy) * uy;
+  out.level = 0.9 / (1 + (d / 22) ** 1.6);
+  out.pan = clamp(ux * ear.rightX + uy * ear.rightY, -1, 1) * 0.8 * Math.min(1, d / 6);
+  out.doppler = clamp(SPEED_OF_SOUND / (SPEED_OF_SOUND + DOPPLER_BOOST * away), 0.7, 1.4);
+  out.clarity = clamp(1.15 - d / 220, 0.15, 1);
+  return out;
+}
+
 /**
  * All game sound, synthesised with Web Audio: no audio files are loaded.
- * The engine note, tyre squeal and wind follow the car being watched; short
- * effects mark lights, impacts, pit stops and results.
+ * Every car has its own engine note; the watched car is heard onboard and
+ * the nearest others around it, placed left or right, dulled by distance and
+ * bent in pitch as they pass. Tyre squeal and wind follow the watched car;
+ * short effects mark lights, impacts, pit stops and results.
  */
 export class Sound {
   muted = readMuted();
 
   private ctx: AudioContext | null = null;
   private master!: GainNode;
-  private engineGain!: GainNode;
-  private engineFilter!: BiquadFilterNode;
-  private engineA!: OscillatorNode;
-  private engineB!: OscillatorNode;
+  private engines: EngineSynth[] = [];
   private skidGain!: GainNode;
   private windGain!: GainNode;
   private noise!: AudioBuffer;
   private lastHit = 0;
+  private readonly near: { id: number; d: number }[] = [];
+  private readonly place: Placement = { level: 0, pan: 0, doppler: 1, clarity: 1 };
+  /** The watched car's throttle last frame, for the pops and blow-off when it lifts. */
+  private lastThrottle = 0;
+  private lastFocus = -1;
+  private lastLift = 0;
 
   /** Browsers only allow sound after a click or key press; call this from one. */
   unlock(): void {
@@ -49,23 +90,7 @@ export class Sound {
     const data = this.noise.getChannelData(0);
     for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
 
-    // Engine: two detuned voices through a filter that opens with the throttle.
-    this.engineGain = ctx.createGain();
-    this.engineGain.gain.value = 0;
-    this.engineFilter = ctx.createBiquadFilter();
-    this.engineFilter.type = 'lowpass';
-    this.engineFilter.frequency.value = 600;
-    this.engineA = ctx.createOscillator();
-    this.engineA.type = 'sawtooth';
-    this.engineB = ctx.createOscillator();
-    this.engineB.type = 'square';
-    const sub = ctx.createGain();
-    sub.gain.value = 0.45;
-    this.engineA.connect(this.engineFilter);
-    this.engineB.connect(sub).connect(this.engineFilter);
-    this.engineFilter.connect(this.engineGain).connect(this.master);
-    this.engineA.start();
-    this.engineB.start();
+    for (let i = 0; i < VOICES; i++) this.engines.push(new EngineSynth(ctx, this.master));
 
     this.skidGain = this.loop('bandpass', 1900, 3);
     this.windGain = this.loop('lowpass', 500, 0.5);
@@ -104,33 +129,94 @@ export class Sound {
     else void this.ctx.resume();
   }
 
+  /** Ids of the cars whose engines are playing, for tests and debugging. */
+  get heard(): number[] {
+    return this.engines.filter((e) => e.car >= 0).map((e) => e.car);
+  }
+
   toggle(): boolean {
     this.setMuted(!this.muted);
     return this.muted;
   }
 
-  /** Follows the watched car each frame. Pass null when no car should be heard. */
-  follow(spec: CarSpec | null, st: CarState | null, onRoad = true): void {
+  /** Stops the engines, tyres and wind: paused, between races, on the menus. */
+  silence(): void {
     const ctx = this.ctx;
     if (!ctx) return;
-    const t = ctx.currentTime;
-    if (!spec || !st) {
-      this.engineGain.gain.setTargetAtTime(0, t, 0.08);
-      this.skidGain.gain.setTargetAtTime(0, t, 0.08);
-      this.windGain.gain.setTargetAtTime(0, t, 0.08);
+    for (const engine of this.engines) if (engine.car >= 0) engine.release();
+    this.skidGain.gain.setTargetAtTime(0, ctx.currentTime, 0.08);
+    this.windGain.gain.setTargetAtTime(0, ctx.currentTime, 0.08);
+    this.lastFocus = -1;
+  }
+
+  /**
+   * Plays the race for one frame: the watched car onboard, the nearest others
+   * from where they are. `voices` is indexed by car id.
+   */
+  hear(cars: readonly RaceCar[], voices: readonly EngineVoice[], focus: number, ear: Ear): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const me = cars[focus];
+    if (!me || me.parked) {
+      this.silence();
       return;
     }
-    const rev = Math.max(0, Math.min(1, st.rpm / spec.engine.redline));
-    const base = 38 + rev * 150;
-    this.engineA.frequency.setTargetAtTime(base, t, 0.03);
-    this.engineB.frequency.setTargetAtTime(base * 0.502, t, 0.03);
-    this.engineFilter.frequency.setTargetAtTime(350 + rev * 1400 + st.throttle * 1500, t, 0.05);
-    this.engineGain.gain.setTargetAtTime(0.1 + 0.16 * st.throttle + 0.06 * rev, t, 0.05);
+
+    // The nearest other cars in earshot get the remaining voices.
+    const near = this.near;
+    near.length = 0;
+    for (const car of cars) {
+      if (car.id === focus || car.parked) continue;
+      const d = Math.hypot(car.state.x - ear.x, car.state.y - ear.y);
+      if (d < EARSHOT) near.push({ id: car.id, d });
+    }
+    near.sort((a, b) => a.d - b.d);
+    if (near.length > VOICES - 1) near.length = VOICES - 1;
+    const wanted = (id: number): boolean => id === focus || near.some((n) => n.id === id);
+    for (const engine of this.engines) if (engine.car >= 0 && !wanted(engine.car)) engine.release();
+    for (const id of [focus, ...near.map((n) => n.id)]) {
+      if (this.engines.some((e) => e.car === id)) continue;
+      this.engines.find((e) => e.car < 0)?.assign(id, voices[id]);
+    }
+
+    for (const engine of this.engines) {
+      if (engine.car < 0) continue;
+      const car = cars[engine.car];
+      if (engine.car === focus) Object.assign(this.place, { level: 1, pan: 0, doppler: 1, clarity: 1 });
+      else placeCar(car.state, ear, this.place);
+      engine.update({ rpm: car.state.rpm, redline: car.spec.engine.redline, throttle: car.state.throttle }, this.place);
+    }
+
+    const t = ctx.currentTime;
+    const st = me.state;
+    const onRoad = me.surface === Surface.Asphalt || me.surface === Surface.Kerb;
     const speed = Math.hypot(st.vx, st.vy);
     const slide = Math.max(st.slideFront, st.slideRear);
     // Tarmac squeals; grass and gravel rumble through the wind channel instead.
     this.skidGain.gain.setTargetAtTime(onRoad ? Math.min(0.22, slide * 0.3) : 0, t, 0.05);
     this.windGain.gain.setTargetAtTime(Math.min(0.2, speed / 400) + (onRoad ? 0 : Math.min(0.25, speed / 60)), t, 0.1);
+    this.liftOff(me, voices[focus], t);
+  }
+
+  /** Off the throttle at high revs: a turbo blows off, an open exhaust pops and crackles. */
+  private liftOff(me: RaceCar, voice: EngineVoice, t: number): void {
+    const st = me.state;
+    if (me.id !== this.lastFocus) {
+      this.lastFocus = me.id;
+      this.lastThrottle = st.throttle;
+      return;
+    }
+    const lifted = this.lastThrottle > 0.75 && st.throttle < 0.2 && st.rpm > me.spec.engine.redline * 0.55;
+    this.lastThrottle = st.throttle;
+    if (!lifted || t - this.lastLift < 0.8) return;
+    this.lastLift = t;
+    if (voice.turbo > 0) this.burst(2600, 0.32, 0.07 * voice.turbo, 0, 'bandpass');
+    if (voice.open > 0.35 && voice.turbo < 1) {
+      const pops = 2 + Math.floor(Math.random() * 4 * voice.open);
+      for (let i = 0; i < pops; i++) this.burst(700 + Math.random() * 900, 0.05, 0.12 * voice.open, 0.04 + Math.random() * 0.45);
+    } else if (voice.open > 0.6) {
+      this.burst(600, 0.06, 0.08 * voice.open, 0.08);
+    }
   }
 
   /** A short tone. */
@@ -149,15 +235,15 @@ export class Sound {
     osc.stop(t + seconds + 0.02);
   }
 
-  /** A burst of filtered noise: impacts, air guns. */
-  burst(frequency: number, seconds: number, volume: number, delay = 0): void {
+  /** A burst of filtered noise: impacts, air guns, exhaust pops. */
+  burst(frequency: number, seconds: number, volume: number, delay = 0, type: BiquadFilterType = 'lowpass'): void {
     const ctx = this.ctx;
     if (!ctx) return;
     const t = ctx.currentTime + delay;
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
     const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
+    filter.type = type;
     filter.frequency.setValueAtTime(frequency, t);
     filter.frequency.exponentialRampToValueAtTime(Math.max(60, frequency * 0.2), t + seconds);
     const gain = ctx.createGain();

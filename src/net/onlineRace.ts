@@ -2,6 +2,7 @@ import { LIVERIES } from '../data/cars';
 import { getPart } from '../data/parts';
 import { TRACKS } from '../data/tracks';
 import { CarBuild, bodyOf, deriveCar, generateBuild } from '../game/build';
+import { voiceForBuild } from '../game/engineVoice';
 import type { Entry, RaceSession } from '../game/raceSetup';
 import { PreparedTrack, prepareTrack } from '../game/trackCache';
 import { DriverDef, deriveProfile, generateDriver } from '../sim/driver';
@@ -40,6 +41,7 @@ function entryOf(build: CarBuild, driver: DriverDef, ref: PreparedTrack, isPlaye
     rimColor: wheels?.look.c ?? DEFAULT_RIM,
     isPlayer,
     pitSaving,
+    voice: voiceForBuild(build),
   };
 }
 

@@ -6,6 +6,7 @@ import { PitMode, Race, Weather } from '../sim/race';
 import { Rng } from '../sim/rng';
 import { Track, TrackDef } from '../sim/track';
 import { CarBuild, bodyOf, deriveCar, generateBuild } from './build';
+import { EngineVoice, voiceForBuild, voiceForModel } from './engineVoice';
 import type { DriverLook } from './profile';
 import { PreparedTrack, prepareTrack } from './trackCache';
 
@@ -18,6 +19,8 @@ export interface Entry {
   isPlayer: boolean;
   /** Seconds saved per pit stop by the car's jacks and wheel nuts. */
   pitSaving: number;
+  /** How the engine sounds. */
+  voice: EngineVoice;
   /** The driver's face for the radio; drivers without one get a generated face. */
   look?: DriverLook;
 }
@@ -56,13 +59,17 @@ export function createQuickRace(opts: QuickRaceOptions): RaceSession {
   const entries: Entry[] = [];
   const codes = new Set<string>();
   for (let i = 0; i < opts.gridSize; i++) {
+    // Driver before car: the order the seed is drawn in sets the field.
+    const driver = uniqueDriver(rng, i, codes);
+    const model = GT3_CARS[(i * 3 + rng.int(0, 2)) % GT3_CARS.length];
     entries.push({
-      driver: uniqueDriver(rng, i, codes),
-      model: GT3_CARS[(i * 3 + rng.int(0, 2)) % GT3_CARS.length],
+      driver,
+      model,
       livery: LIVERIES[i % LIVERIES.length],
       rimColor: DEFAULT_RIM,
       isPlayer: i === playerGrid,
       pitSaving: 12,
+      voice: voiceForModel(model.spec.id, `${opts.seed}/${i}`),
     });
   }
   const race = new Race(
@@ -110,6 +117,7 @@ function entryFromBuild(build: CarBuild, driver: DriverDef, ref: PreparedTrack, 
     rimColor: wheels?.look.c ?? DEFAULT_RIM,
     isPlayer,
     pitSaving: derived.stats?.pitSaving ?? 0,
+    voice: voiceForBuild(build),
   };
 }
 

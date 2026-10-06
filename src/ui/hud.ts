@@ -70,6 +70,10 @@ export class Hud {
   private readonly status: HTMLElement;
   private readonly driver: HTMLElement;
   private readonly carName: HTMLElement;
+  /** Who is driving the player's car, while the player has taken the wheel. */
+  private readonly wheel: HTMLElement;
+  private atWheel = false;
+  private wheelText = '';
   private readonly gear: HTMLElement;
   private readonly speed: HTMLElement;
   private readonly rpm: HTMLElement[] = [];
@@ -147,6 +151,7 @@ export class Hud {
     this.driver = el('b');
     this.carName = el('span');
     driverLine.append(this.driver, this.carName);
+    this.wheel = el('div', 'wheel hidden');
     const main = el('div', 'main');
     this.gear = el('div', 'gear', 'N');
     const speedBox = el('div');
@@ -177,7 +182,7 @@ export class Hud {
       fuel: makeBar('Fuel', 'fuel'),
     };
     this.barText = { tyre: values[2], fuel: values[3] };
-    dash.append(driverLine, main, rpm, bars);
+    dash.append(driverLine, this.wheel, main, rpm, bars);
     root.append(dash);
 
     // Minimap.
@@ -291,6 +296,11 @@ export class Hud {
     this.bannerTimer = seconds;
   }
 
+  /** Whether the player has taken the wheel of their car. */
+  setWheel(on: boolean): void {
+    this.atWheel = on;
+  }
+
   /** Sends an order to the player's driver and shows the call on the radio. */
   order(command: Command): void {
     const c = COMMANDS.find((x) => x.id === command);
@@ -307,6 +317,25 @@ export class Hud {
       this.looks.set(car, look);
     }
     return look;
+  }
+
+  private updateWheel(): void {
+    const { race } = this.session;
+    const mine = race.cars[this.session.playerCar];
+    const live = this.atWheel && race.drivenByHand(mine);
+    let text = '';
+    if (live) text = 'You drive: W A S D';
+    else if (this.atWheel) {
+      // The driver does the start, the pit lane and the lap after the flag.
+      if (mine.finished || mine.retired || race.phase === 'finished') text = 'Driver has the car';
+      else if (race.phase === 'countdown') text = 'You drive on green';
+      else text = 'Pit lane: driver has it';
+    }
+    if (text === this.wheelText) return;
+    this.wheelText = text;
+    this.wheel.textContent = text;
+    this.wheel.classList.toggle('hidden', !text);
+    this.wheel.classList.toggle('live', live);
   }
 
   /** Adds a message to the radio feed: a driver's face or a voice icon, a name tag and the words. */
@@ -418,6 +447,7 @@ export class Hud {
     this.lights.classList.toggle('hidden', race.phase !== 'countdown');
     this.lamps.forEach((lamp, i) => lamp.classList.toggle('on', i < race.lights));
     this.drawMap(focusCar);
+    this.updateWheel();
 
     // Slower readouts a few times a second.
     this.slowTimer -= dt;

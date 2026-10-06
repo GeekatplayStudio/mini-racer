@@ -2,7 +2,7 @@
 
 **A 16-bit style racing team game by Geekatplay Studio.**
 
-You do not steer the car. You build it, part by part, in a 3D garage; you create the driver who races it; then you run the race from the pit wall, alone or online against other teams. Prize money buys better parts.
+You build the car, part by part, in a 3D garage; you create the driver who races it; then you run the race from the pit wall, alone or online against other teams. Or take the wheel and drive it yourself. Prize money buys better parts.
 
 ![Race](docs/screenshots/race.png)
 
@@ -46,7 +46,11 @@ You do not steer the car. You build it, part by part, in a 3D garage; you create
 - Collisions leave visible damage and cost a little speed; cars recover and carry on. Pit stops repair part of it.
 - Going off the track wears the tyres much faster and leaves them dirty for a few corners.
 - Three cameras: chase, driver's eye, and a top view that fits the whole circuit on screen, however big the track.
-- Synthesised engine, tyre and impact sound, with a mute button (or press `M`).
+- Move any camera with the mouse: drag to turn and tilt it (down low for a view from the side), right-drag or Shift-drag to slide it, the wheel to zoom. From the driver's eye, drag to look around. Double-click or press `V` to put it back.
+- Take the wheel: press `T` in an offline race and drive with `W` `A` `S` `D` or the arrow keys. Hold `S` when stopped to reverse. Keys have no half-press, so the steering gives only the lock the tyres can use at that speed and catches a sliding rear. Your driver still does the start, the pit lane and the lap after the flag. Press `T` again to hand the car back.
+- Every engine sounds like itself: the note is the real firing frequency for its cylinders and revs, and the layout shapes it. A cross-plane V8 burbles, a flat-plane V8 and a V10 scream, a flat-six rasps, turbos whistle and blow off when the driver lifts, and an open exhaust pops. The exhaust part sets how loud and raw it is, and no two cars on the grid sound quite the same.
+- You hear the car you are watching and the five nearest around it: placed left or right as they are on screen, quieter and duller further away, and rising then falling in pitch as they pass.
+- Tyre squeal, wind and impacts are synthesised too, with a mute button (or press `M`).
 - Race history, career statistics and a photo album.
 
 **Race online**
@@ -109,19 +113,25 @@ For development with live reloading, run the server with `CORS_DEV=1 npm start`,
 | `Tab` / `Shift+Tab` | Follow the next or previous car |
 | `Home` | Back to your car |
 | `C` | Camera: chase, driver's eye, circuit |
+| Mouse drag / right-drag / wheel | Turn and tilt, slide, zoom the camera |
+| `V` or double-click | Put the camera back |
+| `F` | Chase camera behind the car, or fixed |
+| `T` | Take the wheel, or hand it back (offline races) |
+| `W` `A` `S` `D` or arrows | At the wheel: accelerate, steer left, brake (reverse when stopped), steer right |
 | `1` `2` `3` `4` | Race speed: 1x, 2x, 4x, 8x |
 | `P` or `Space` | Pause |
 | `M` | Sound on or off |
 | `Esc` | Leave the race |
-| `Q` `W` `E` | Pace: push, standard, save |
-| `A` `S` `D` | Stance: attack, race, hold position |
+| `Q` `W` `E` | Pace: push, standard, save (not at the wheel) |
+| `A` `S` `D` | Stance: attack, race, hold position (not at the wheel) |
 | `B` `N` | Box this lap, stay out |
 
 ## How it is built
 
 - **TypeScript**, **Three.js** and **Vite**. No game engine and no art files: every model, texture and sound is made in code.
-- The simulation runs at a fixed 240 steps a second and is fully deterministic: the same seed and the same orders always give the same race.
+- The simulation runs at a fixed 240 steps a second and is fully deterministic: the same seed and the same orders always give the same race, unless you take the wheel.
 - The look comes from rendering to a low-resolution frame, then outlining and dithering it to a limited palette.
+- Engine sound is built from a handful of oscillators per car, set from the engine part's layout and the exhaust: no recordings. Six engines play at once, mixed with Web Audio.
 - The online server is plain Node.js with one dependency (`ws`). Accounts and teams are stored as files; passwords are salted and hashed with scrypt.
 
 ```

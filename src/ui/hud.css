@@ -203,6 +203,19 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.dash .wheel {
+  padding: calc(var(--u) * 1) calc(var(--u) * 2);
+  background: var(--panel-hi);
+  color: var(--yellow);
+  font-weight: 700;
+  font-size: var(--ps);
+  letter-spacing: 0.06em;
+  text-align: center;
+}
+.dash .wheel.live {
+  background: var(--green);
+  color: var(--ink);
+}
 .dash .main {
   display: flex;
   align-items: flex-end;

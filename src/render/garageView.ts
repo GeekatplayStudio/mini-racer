@@ -119,6 +119,8 @@ function buildRoom(): THREE.Group {
 export class GarageView {
   /** Slowly turns the car when the player is not dragging. */
   autoRotate = false;
+  /** False while something else is on the shared canvas, such as a race. */
+  interactive = true;
 
   private readonly pipeline: PixelPipeline;
   private readonly scene = new THREE.Scene();
@@ -183,6 +185,7 @@ export class GarageView {
   private bindInput(): void {
     const c = this.canvas;
     this.on(c, 'pointerdown', ((e: PointerEvent) => {
+      if (!this.interactive) return;
       this.drag = { mode: e.button === 2 || e.button === 1 || e.shiftKey ? 'pan' : 'orbit', x: e.clientX, y: e.clientY };
       c.setPointerCapture(e.pointerId);
     }) as EventListener);
@@ -201,6 +204,7 @@ export class GarageView {
     this.on(c, 'pointerup', end);
     this.on(c, 'pointercancel', end);
     this.on(c, 'wheel', ((e: WheelEvent) => {
+      if (!this.interactive) return;
       e.preventDefault();
       this.zoom(e.deltaY > 0 ? 1.12 : 1 / 1.12);
     }) as EventListener, { passive: false });

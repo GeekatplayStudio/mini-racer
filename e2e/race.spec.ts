@@ -2,9 +2,12 @@ import { expect, test } from '@playwright/test';
 
 interface Probe {
   session: {
-    race: { phase: string; time: number; cars: { state: { x: number; vx: number } }[] };
+    playerCar: number;
+    race: { phase: string; time: number; cars: { id: number; state: { x: number; y: number; vx: number; heading: number }; manual: object | null }[] };
+    entries: { voice: { label: string; tune: number } }[];
   };
-  view: { focusCar: number; cameraMode: string };
+  sound: { heard: number[] };
+  view: { focusCar: number; cameraMode: string; followHeading: boolean; camera: { position: { x: number; y: number; z: number } } };
 }
 
 declare global {
@@ -75,6 +78,76 @@ test.describe('Race screen', () => {
     const t1 = await page.evaluate(() => window.miniracer.session.race.time);
     expect(t1).toBe(t0);
     await expect(page.locator('.session')).toContainText(/paused/i);
+  });
+
+  test('the player can take the wheel and drive with W A S D', async ({ page }) => {
+    await page.goto('/?quick=1&seed=5&grid=6&laps=2');
+    const mine = (): Promise<{ manual: boolean; vx: number; heading: number }> =>
+      page.evaluate(() => {
+        const s = window.miniracer.session;
+        const car = s.race.cars[s.playerCar];
+        return { manual: car.manual !== null, vx: car.state.vx, heading: car.state.heading };
+      });
+    // Taken on the grid: the driver keeps the car until the lights go out.
+    await page.keyboard.press('t');
+    expect((await mine()).manual).toBe(true);
+    await expect(page.locator('.dash .wheel')).toContainText(/on green/i);
+    expect(await page.evaluate(() => window.miniracer.view.followHeading)).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.miniracer.session.race.phase), { timeout: 15_000 }).toBe('racing');
+    await expect(page.locator('.dash .wheel')).toContainText(/you drive/i);
+    expect((await mine()).vx).toBeLessThan(1);
+    await page.keyboard.down('w');
+    await expect.poll(async () => (await mine()).vx).toBeGreaterThan(12);
+    const before = (await mine()).heading;
+    await page.keyboard.down('d');
+    await expect.poll(async () => (await mine()).heading - before).toBeGreaterThan(0.08);
+    await page.keyboard.up('d');
+    await page.keyboard.up('w');
+    const fast = (await mine()).vx;
+    await page.keyboard.down('s');
+    await expect.poll(async () => (await mine()).vx).toBeLessThan(fast - 5);
+    await page.keyboard.up('s');
+    await page.keyboard.press('t');
+    expect((await mine()).manual).toBe(false);
+    await expect(page.locator('.dash .wheel')).toBeHidden();
+  });
+
+  test('the mouse turns and zooms the race camera', async ({ page }) => {
+    await page.goto('/?quick=1&seed=5&grid=6&laps=1&skip=12');
+    await page.keyboard.press('p');
+    const camera = (): Promise<{ x: number; y: number; z: number }> =>
+      page.evaluate(() => ({ ...window.miniracer.view.camera.position }));
+    const start = await camera();
+    await page.mouse.move(640, 300);
+    await page.mouse.down();
+    await page.mouse.move(800, 300, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => Math.hypot((await camera()).x - start.x, (await camera()).z - start.z)).toBeGreaterThan(20);
+    const turned = await camera();
+    await page.mouse.wheel(0, 500);
+    await expect.poll(async () => (await camera()).y).toBeGreaterThan(turned.y * 1.3);
+    await page.keyboard.press('v');
+    await expect.poll(async () => (await camera()).y).toBeCloseTo(start.y, 0);
+  });
+
+  test('every car has its own engine, and the nearest ones are heard', async ({ page }) => {
+    await page.goto('/?quick=1&seed=5&grid=10&laps=2&skip=20');
+    // Sound starts on the first key press.
+    await page.keyboard.press('Home');
+    await expect.poll(() => page.evaluate(() => window.miniracer.sound.heard.length)).toBe(6);
+    const check = await page.evaluate(() => {
+      const m = window.miniracer;
+      const cars = m.session.race.cars;
+      const me = cars[m.view.focusCar].state;
+      const nearest = [...cars]
+        .sort((a, b) => Math.hypot(a.state.x - me.x, a.state.y - me.y) - Math.hypot(b.state.x - me.x, b.state.y - me.y))
+        .slice(0, 6)
+        .map((c) => c.id);
+      return { heard: m.sound.heard, nearest, focus: m.view.focusCar, voices: m.session.entries.map((e) => `${e.voice.label} ${e.voice.tune}`) };
+    });
+    expect(check.heard).toContain(check.focus);
+    expect([...check.heard].sort()).toEqual([...check.nearest].sort());
+    expect(new Set(check.voices).size).toBe(check.voices.length);
   });
 
   test('shows the result table when the race ends', async ({ page }) => {

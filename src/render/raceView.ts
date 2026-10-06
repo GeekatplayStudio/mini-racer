@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { Ear } from '../audio/sound';
 import type { RaceSession } from '../game/raceSetup';
 import { clamp } from '../sim/math';
 import type { Hazard, RaceCar } from '../sim/race';
@@ -15,6 +16,23 @@ export type CameraMode = 'chase' | 'pov' | 'overview';
 
 /** Target height of the low-resolution frame, in pixels. */
 const TARGET_ROWS = 540;
+/** How low and how high the cameras above the track may be tilted, rad above the horizon. */
+const MIN_ELEVATION = 0.45;
+const MAX_ELEVATION = 1.5;
+/** Ground-plane tilt of each camera above the track: horizontal offset per unit of height. */
+const TILT: Record<Exclude<CameraMode, 'pov'>, number> = { chase: 0.58, overview: 0.32 };
+const ZOOM: Record<CameraMode, [number, number]> = { chase: [0.3, 4], pov: [0.6, 1.4], overview: [0.12, 1.6] };
+
+/** The player's changes to a camera: turn, tilt, zoom and a shift across the ground (m, screen right and up). */
+interface CameraAdjust {
+  yaw: number;
+  pitch: number;
+  zoom: number;
+  panRight: number;
+  panUp: number;
+}
+
+const freshAdjust = (): CameraAdjust => ({ yaw: 0, pitch: 0, zoom: 1, panRight: 0, panUp: 0 });
 
 interface CarFx {
   wheelX: number[];
@@ -29,6 +47,8 @@ interface CarFx {
 export class RaceView {
   cameraMode: CameraMode = 'chase';
   focusCar: number;
+  /** The chase camera swings round behind the car instead of keeping one compass bearing. */
+  followHeading = false;
 
   private readonly pipeline: PixelPipeline;
   private readonly scene = new THREE.Scene();
@@ -40,6 +60,8 @@ export class RaceView {
   private readonly puffs = new Puffs();
   private readonly skids = new SkidMarks();
   private readonly focus = new THREE.Vector3();
+  private readonly earAt: Ear = { x: 0, y: 0, vx: 0, vy: 0, rightX: 1, rightY: 0 };
+  private readonly right = new THREE.Vector3();
   private camHeight = 70;
   private readonly bounds: { cx: number; cz: number; w: number; h: number };
   private snapped = false;
@@ -49,6 +71,12 @@ export class RaceView {
   private readonly weather: WeatherFx;
   /** Ground the camera can see: middle, span and how high the weather starts. */
   private readonly view = { centre: new THREE.Vector3(), size: 80, height: 60 };
+  private readonly adjust: Record<CameraMode, CameraAdjust> = { chase: freshAdjust(), pov: freshAdjust(), overview: freshAdjust() };
+  /** Smoothed compass bearing that puts the camera behind the followed car. */
+  private followYaw = 0;
+  private metresPerPixel = 0.1;
+  private drag: { mode: 'turn' | 'pan'; x: number; y: number } | null = null;
+  private readonly listeners: [string, EventListener][] = [];
 
   constructor(private readonly renderer: THREE.WebGLRenderer, private readonly session: RaceSession) {
     this.focusCar = session.playerCar;
@@ -108,6 +136,9 @@ export class RaceView {
   }
 
   dispose(): void {
+    const canvas = this.renderer.domElement;
+    for (const [type, fn] of this.listeners) canvas.removeEventListener(type, fn);
+    this.listeners.length = 0;
     for (const mesh of this.hazardMeshes.values()) disposeTree(mesh);
     this.hazardMeshes.clear();
     this.weather.dispose();
@@ -128,6 +159,79 @@ export class RaceView {
     this.snapped = false;
   }
 
+  /**
+   * Lets the mouse move the camera: drag to turn and tilt it (to look around
+   * from the cockpit), right- or Shift-drag to slide it, the wheel to zoom and
+   * a double click to put it back. Only for a race the player is watching.
+   */
+  enableMouse(): void {
+    const c = this.renderer.domElement;
+    const on = (type: string, fn: EventListener, opts?: AddEventListenerOptions): void => {
+      c.addEventListener(type, fn, opts);
+      this.listeners.push([type, fn]);
+    };
+    on('pointerdown', ((e: PointerEvent) => {
+      this.drag = { mode: e.button === 2 || e.button === 1 || e.shiftKey ? 'pan' : 'turn', x: e.clientX, y: e.clientY };
+      c.setPointerCapture(e.pointerId);
+    }) as EventListener);
+    on('pointermove', ((e: PointerEvent) => {
+      if (!this.drag) return;
+      const dx = e.clientX - this.drag.x, dy = e.clientY - this.drag.y;
+      this.drag.x = e.clientX;
+      this.drag.y = e.clientY;
+      if (this.drag.mode === 'pan') this.panCamera(dx, dy);
+      else this.turnCamera(dx, dy);
+    }) as EventListener);
+    const end = ((e: PointerEvent) => {
+      this.drag = null;
+      if (c.hasPointerCapture(e.pointerId)) c.releasePointerCapture(e.pointerId);
+    }) as EventListener;
+    on('pointerup', end);
+    on('pointercancel', end);
+    on('wheel', ((e: WheelEvent) => {
+      e.preventDefault();
+      // About 12% a notch of a mouse wheel; a touchpad's many small steps add up to the same.
+      const pixels = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+      this.zoomCamera(Math.exp(clamp(pixels * 0.00113, -0.5, 0.5)));
+    }) as EventListener, { passive: false });
+    on('dblclick', (() => this.resetCamera()) as EventListener);
+    on('contextmenu', ((e: Event) => e.preventDefault()) as EventListener);
+  }
+
+  /** Turns and tilts the camera by a mouse movement in pixels; from the cockpit, looks around. */
+  turnCamera(dx: number, dy: number): void {
+    const adj = this.adjust[this.cameraMode];
+    if (this.cameraMode === 'pov') {
+      adj.yaw = clamp(adj.yaw + dx * 0.006, -2.6, 2.6);
+      adj.pitch = clamp(adj.pitch - dy * 0.004, -0.45, 0.45);
+      return;
+    }
+    adj.yaw = wrapAngle(adj.yaw - dx * 0.008);
+    const base = Math.atan2(1, TILT[this.cameraMode]);
+    adj.pitch = clamp(adj.pitch + dy * 0.005, MIN_ELEVATION - base, MAX_ELEVATION - base);
+  }
+
+  /** Zooms out (factor above 1) or in. */
+  zoomCamera(factor: number): void {
+    const adj = this.adjust[this.cameraMode];
+    const [lo, hi] = ZOOM[this.cameraMode];
+    adj.zoom = clamp(adj.zoom * factor, lo, hi);
+  }
+
+  /** Slides the camera over the ground so the picture follows the mouse. */
+  panCamera(dx: number, dy: number): void {
+    if (this.cameraMode === 'pov') return;
+    const adj = this.adjust[this.cameraMode];
+    const reach = this.cameraMode === 'overview' ? Math.max(this.bounds.w, this.bounds.h) * 0.7 : 500;
+    adj.panRight = clamp(adj.panRight - dx * this.metresPerPixel, -reach, reach);
+    adj.panUp = clamp(adj.panUp + dy * this.metresPerPixel, -reach, reach);
+  }
+
+  /** Puts the current camera back where it started. */
+  resetCamera(): void {
+    Object.assign(this.adjust[this.cameraMode], freshAdjust());
+  }
+
   /** Syncs the scene with the race and advances visual effects by dt seconds. */
   update(dt: number): void {
     const race = this.session.race;
@@ -142,6 +246,22 @@ export class RaceView {
     this.updateCamera(dt);
     this.weather.updatePuddles(race.puddles);
     this.weather.update(dt, this.view.centre, this.view.size, this.view.height);
+  }
+
+  /** Where the race is heard from: the watched car, with left and right as they are on screen. */
+  ear(): Ear {
+    const st = this.session.race.cars[this.focusCar].state;
+    const cosH = Math.cos(st.heading), sinH = Math.sin(st.heading);
+    const e = this.earAt;
+    e.x = st.x;
+    e.y = st.y;
+    e.vx = st.vx * cosH - st.vy * sinH;
+    e.vy = st.vx * sinH + st.vy * cosH;
+    const right = this.right.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const len = Math.hypot(right.x, right.z) || 1;
+    e.rightX = right.x / len;
+    e.rightY = right.z / len;
+    return e;
   }
 
   render(): void {
@@ -284,9 +404,7 @@ export class RaceView {
 
   private updateCamera(dt: number): void {
     const cam = this.camera;
-    let shadowHalf = 130;
-    let target: THREE.Vector3;
-    let height: number;
+    const adj = this.adjust[this.cameraMode];
 
     const sky = this.cameraMode === 'pov';
     (this.scene.background as THREE.Color).setHex(sky ? this.look.sky : this.look.ground);
@@ -300,80 +418,95 @@ export class RaceView {
       const cosH = Math.cos(st.heading), sinH = Math.sin(st.heading);
       const seat = -0.36, ahead = 0.25;
       const ex = st.x + ahead * cosH - seat * sinH, ez = st.y + ahead * sinH + seat * cosH;
-      const look = st.heading + st.steerAngle * 0.5;
-      cam.near = 0.4;
-      cam.far = 2400;
-      cam.fov = 64;
-      cam.updateProjectionMatrix();
+      // The player can turn their head; the wheel still swings the view into the corner.
+      const look = st.heading + st.steerAngle * 0.5 + adj.yaw;
+      this.setLens(0.4, 2400, 64 * adj.zoom);
       cam.position.set(ex, 1.08 - st.ax * 0.004, ez);
       cam.up.set(Math.sin(st.ay * 0.004) * -sinH, 1, Math.sin(st.ay * 0.004) * cosH);
-      cam.lookAt(ex + Math.cos(look) * 30, 0.9, ez + Math.sin(look) * 30);
+      cam.lookAt(ex + Math.cos(look) * 30, 0.9 + Math.tan(adj.pitch) * 30, ez + Math.sin(look) * 30);
       this.focus.set(st.x, 0, st.y);
       this.snapped = false;
       this.view.centre.set(ex + Math.cos(look) * 26, 0, ez + Math.sin(look) * 26);
       this.view.size = 64;
       this.view.height = 16;
-      this.aimShadows(110);
+      this.aimShadows(this.view.centre, 110);
       return;
     }
-    let near = 10, far = 2400;
+
+    let shadowHalf = 130;
+    const tilt = TILT[this.cameraMode === 'overview' ? 'overview' : 'chase'];
     if (this.cameraMode === 'overview') {
       const b = this.bounds;
       const vFov = THREE.MathUtils.degToRad(28);
       const fitH = b.h / (2 * Math.tan(vFov / 2));
       const fitW = b.w / (2 * Math.tan(vFov / 2) * cam.aspect);
-      height = Math.max(fitH, fitW) * 1.22;
-      // The big circuits put the camera several kilometres up: reach past the far edge of the ground.
-      // Near scales too, keeping depth precision for the outline pass; weather starts well below it.
-      far = Math.max(far, height * 1.5);
-      near = Math.max(near, height * 0.1);
-      target = new THREE.Vector3(b.cx, 0, b.cz);
+      this.camHeight = Math.max(fitH, fitW) * 1.22;
+      this.focus.set(b.cx, 0, b.cz);
       shadowHalf = Math.max(b.w, b.h) * 0.62;
-      this.focus.copy(target);
-      this.camHeight = height;
     } else {
       const st = this.session.race.cars[this.focusCar].state;
       const cosH = Math.cos(st.heading), sinH = Math.sin(st.heading);
       const speed = Math.hypot(st.vx, st.vy);
       const lead = 0.55;
-      target = new THREE.Vector3(
+      const target = new THREE.Vector3(
         st.x + (st.vx * cosH - st.vy * sinH) * lead,
         0,
         st.y + (st.vx * sinH + st.vy * cosH) * lead,
       );
-      height = 62 + speed * 0.5;
+      const height = 62 + speed * 0.5;
+      // Behind the car: the camera's compass bearing that puts the car's nose at the top of the screen.
+      const behind = -st.heading - Math.PI / 2;
       if (!this.snapped) {
         this.focus.copy(target);
         this.camHeight = height;
+        this.followYaw = behind;
         this.snapped = true;
       } else {
         this.focus.lerp(target, 1 - Math.exp(-dt * 3.2));
         this.camHeight += (height - this.camHeight) * (1 - Math.exp(-dt * 1.4));
+        this.followYaw += wrapAngle(behind - this.followYaw) * (1 - Math.exp(-dt * 2.4));
       }
-    }
-    if (cam.fov !== 28 || cam.near !== near || cam.far !== far) {
-      cam.near = near;
-      cam.far = far;
-      cam.fov = 28;
-      cam.up.set(0, 1, 0);
-      cam.updateProjectionMatrix();
+      shadowHalf *= Math.max(1, adj.zoom);
     }
 
-    const tilt = this.cameraMode === 'overview' ? 0.32 : 0.58;
-    cam.position.set(this.focus.x, this.camHeight, this.focus.z + this.camHeight * tilt);
-    cam.lookAt(this.focus);
+    // The player's turn, tilt, zoom and shift on top of the framing above.
+    const yaw = adj.yaw + (this.cameraMode === 'chase' && this.followHeading ? this.followYaw : 0);
+    const elevation = clamp(Math.atan2(1, tilt) + adj.pitch, MIN_ELEVATION, MAX_ELEVATION);
+    const dist = this.camHeight * Math.hypot(1, tilt) * adj.zoom;
+    const sinY = Math.sin(yaw), cosY = Math.cos(yaw);
+    const centre = this.view.centre.set(
+      this.focus.x + adj.panRight * cosY - adj.panUp * sinY,
+      0,
+      this.focus.z - adj.panRight * sinY - adj.panUp * cosY,
+    );
+    const ground = dist * Math.cos(elevation);
+    cam.position.set(centre.x + sinY * ground, dist * Math.sin(elevation), centre.z + cosY * ground);
+    cam.up.set(0, 1, 0);
+    cam.lookAt(centre);
+    // The big circuits put the camera several kilometres up, and a low camera sees far across the ground:
+    // reach past the far edge. Near scales too, keeping depth precision for the outline pass.
+    this.setLens(Math.max(2, dist * 0.1), Math.max(2400, dist * 3), 28);
+    this.metresPerPixel = (2 * dist * Math.tan(THREE.MathUtils.degToRad(14))) / Math.max(1, this.renderer.domElement.clientHeight);
 
-    this.view.centre.copy(this.focus);
-    this.view.size = this.cameraMode === 'overview' ? Math.max(this.bounds.w, this.bounds.h) : this.camHeight * 1.15;
-    this.view.height = this.camHeight * 0.8;
-    this.aimShadows(shadowHalf);
+    this.view.size = this.cameraMode === 'overview' ? Math.max(this.bounds.w, this.bounds.h) * adj.zoom : this.camHeight * 1.15 * adj.zoom;
+    this.view.height = cam.position.y * 0.8;
+    this.aimShadows(centre, shadowHalf);
+  }
+
+  private setLens(near: number, far: number, fov: number): void {
+    const cam = this.camera;
+    if (cam.near === near && cam.far === far && cam.fov === fov) return;
+    cam.near = near;
+    cam.far = far;
+    cam.fov = fov;
+    cam.updateProjectionMatrix();
   }
 
   /** Keeps the shadow map centred on what the camera sees, snapped to its texels. */
-  private aimShadows(shadowHalf: number): void {
+  private aimShadows(centre: THREE.Vector3, shadowHalf: number): void {
     const texel = (shadowHalf * 2) / this.sun.shadow.mapSize.x;
-    const sx = Math.round(this.focus.x / texel) * texel;
-    const sz = Math.round(this.focus.z / texel) * texel;
+    const sx = Math.round(centre.x / texel) * texel;
+    const sz = Math.round(centre.z / texel) * texel;
     this.sun.target.position.set(sx, 0, sz);
     this.sun.position.set(sx - 150, 260, sz - 110);
     const sc = this.sun.shadow.camera;
@@ -387,6 +520,11 @@ export class RaceView {
       sc.updateProjectionMatrix();
     }
   }
+}
+
+/** The same angle in -PI..PI. */
+function wrapAngle(a: number): number {
+  return a - Math.round(a / (2 * Math.PI)) * 2 * Math.PI;
 }
 
 function hazardBox(parent: THREE.Object3D, color: number, w: number, h: number, d: number, x: number, y: number, z: number, ry = 0): THREE.Mesh {
